@@ -73,17 +73,57 @@ static PyObject* pyo_def_enc( PyObject* self, PyObject* args ){
 				pdef->atts[i] = strdup( pname );
 			}
 		}
-
 	}
-
 	PyDict_SetItem( dict, cls, PyCObject_FromVoidPtr( pdef, NULL ));
-	
 }
 
 #define SEP "\x10"
 #define SEP2 '\x10'
 
-int pyo_inter_encode( PyObject* pyo, char *cpt, int offset ){
+int pyo_handle_enc_ref( PyObject* pyo, PyObject* ref,  int pos, int * offset ){
+	printf("pyo_handle_enc_ref %d, %d\n", pos, *offset );
+	int l = 0;
+	static char constr[1024];
+	if( ref == NULL ){		
+		Cls_Ref_Info* info = PyMem_Malloc( sizeof( Cls_Ref_Info ) );
+		info->no = 0;
+		info->pos = pos;
+
+		ref = PyCObject_FromVoidPtr( info , NULL );
+		PyDict_SetItem( g_enc_refs, PyInt_FromLong( pyo ), ref );
+	}
+	else{
+		 // printf("handle enc ref\n");
+		Cls_Ref_Info * info = ( Cls_Ref_Info*)PyCObject_AsVoidPtr( ref );
+		if( info->no == 0 ){
+			g_enc_count++;
+			info->no = g_enc_count;
+			int ml = sprintf(constr, ":" SEP "%d" SEP, g_enc_count );
+			// 所有的对象都后移  ml
+			PyObject *k, *v;
+			Py_ssize_t _pos = 0;
+			while( PyDict_Next( g_enc_refs, &_pos, &k, &v ) ){
+				Cls_Ref_Info *_info = PyCObject_AsVoidPtr( v );
+				if( _info->pos > info->pos ) _info->pos += ml;
+			}
+			if( *offset + ml > g_pyenstrlen ) pyenstrnew();
+			printf("memmove %d, %d , %d\n", info->pos + ml, info->pos, *offset - info->pos );
+			printf("memmove str %s\n", g_pyenstr + info->pos );
+
+			memmove( g_pyenstr + info->pos + ml, g_pyenstr+info->pos, *offset - info->pos );
+			memcpy( g_pyenstr + info->pos, constr, ml );
+		//	*offset += ml;
+			l += ml;
+
+		}
+		l += sprintf( g_pyenstr + (*offset), "=" SEP "%d", info->no );	
+		return l;
+	}
+	return l;
+}
+
+
+int pyo_inter_encode( PyObject* pyo, char *cpt, int offset  ){
 	int l = 1;
 	static char constr[1024];
 	if( pyo == Py_None ) *cpt = ',';
@@ -116,52 +156,24 @@ int pyo_inter_encode( PyObject* pyo, char *cpt, int offset ){
 		}
 	}
 	else if( PyList_Check( pyo ) ){
+		l = 0;
 		PyObject *ref = PyDict_GetItem(g_enc_refs, PyInt_FromLong(pyo) );
 		int ss = PyList_Size( pyo );
+		printf("size: %d\n", ss );
 		if( offset + 1024 > g_pyenstrlen ) pyenstrnew();
-		l = sprintf( cpt,  "[" SEP "%d" SEP, ss );
-		if( ref == NULL ){
-			
-			Cls_Ref_Info* info = PyMem_Malloc( sizeof( Cls_Ref_Info ) );
-			info->no = 0;
-			info->pos = offset + l;
-
-			ref = PyCObject_FromVoidPtr( info , NULL );
-			PyDict_SetItem( g_enc_refs, PyInt_FromLong( pyo ), ref );
+		if ( ref == NULL ){
+			l = sprintf( cpt,  "[" SEP "%d" SEP, ss );
 		}
-		else{
-			 // printf("handle enc ref\n");
-			Cls_Ref_Info * info = ( Cls_Ref_Info*)PyCObject_AsVoidPtr( ref );
-			if( info->no == 0 ){
-				g_enc_count++;
-				info->no = g_enc_count;
-				int ml = sprintf(constr, ":" SEP "%d" SEP, g_enc_count );
-				// 所有的对象都后移  ml
-				PyObject *k, *v;
-				Py_ssize_t pos = 0;
-				while( PyDict_Next( g_enc_refs, &pos, &k, &v ) ){
-					Cls_Ref_Info *_info = PyCObject_AsVoidPtr( v );
-					if( _info->pos > info->pos ) _info->pos += ml;
-				}
-				if( offset + l + ml > g_pyenstrlen ) pyenstrnew();
-				memmove( g_pyenstr + info->pos + ml, g_pyenstr+info->pos, offset + l - pos );
-				memcpy( g_pyenstr + info->pos, constr, ml );
-
-				offset += ml;
-			}
-			l = sprintf( cpt, "=" SEP "%d", info->no );	
-			return l;
-		}
-
+		int r = pyo_handle_enc_ref( pyo, ref, l + offset,  &offset );
+		if( r ) return r;
 		for( int i=0; i < ss; i++){
 			PyObject* o = PyList_GET_ITEM( pyo, i );
 			int l2 = pyo_inter_encode( o, cpt+l,offset + l );
-			if( l2 == NULL ) return NULL;
+			if( l2 == 0 ) return 0;
 			l = l + l2;
 			*(cpt+l) = SEP2;
 			++l;
 		}
-
 		*(cpt +l ) = ']';
 		l++;
 
@@ -179,6 +191,7 @@ PyObject* pyo_encode(PyObject* self, PyObject * o ){
 	
 	PyDict_Clear( g_enc_refs);
 	g_enc_count = 0;
+	o = PyTuple_GET_ITEM( o, 0 );
 	int l = pyo_inter_encode( o, g_pyenstr, 0 );
 	// 清除 g_enc_refs 的内容
 	PyObject *k, *v;
@@ -199,7 +212,7 @@ PyObject* pyo_encode(PyObject* self, PyObject * o ){
 
 static PyMethodDef pyMds[] = {
 	{ "def_enc", pyo_def_enc, METH_VARARGS, "define encode rule"},
-	{ "enc", pyo_encode, METH_O, "encode object"},
+	{ "enc", pyo_encode, METH_VARARGS, "encode object"},
 	{ NULL, NULL, NULL, NULL }
 };
 int initPyVM(){
