@@ -10820,7 +10820,9 @@ static void usage() {
 
 int main(int argc, char **argv) {
     time_t start;
-
+	
+	if (initPyVM() ) return;
+	return;
     initServerConfig();
     if (argc == 2) {
         if (strcmp(argv[1], "-v") == 0 ||
@@ -10834,6 +10836,7 @@ int main(int argc, char **argv) {
         redisLog(REDIS_WARNING,"Warning: no config file specified, using the default config. In order to specify a config file use 'redis-server /path/to/redis.conf'");
     }
     if (server.daemonize) daemonize();
+
     initServer();
     redisLog(REDIS_NOTICE,"Server started, Redis version " REDIS_VERSION);
 #ifdef __linux__
@@ -10946,6 +10949,7 @@ static void setupSigSegvAction(void) {
     act.sa_flags = SA_NODEFER | SA_ONSTACK | SA_RESETHAND;
     act.sa_handler = sigtermHandler;
     sigaction (SIGTERM, &act, NULL);
+	sigaction( SIGINT, &act, NULL );
     return;
 }
 

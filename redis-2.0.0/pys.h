@@ -4,7 +4,7 @@
 
 #include<Python.h>
 
-void initPyVM();
+int initPyVM();
 
 
 #endif
