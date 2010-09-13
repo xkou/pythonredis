@@ -19,8 +19,7 @@ PyObject * g_enc_refs;
 PyObject **g_pyo_dicts;
 
 static char * pyenstrnew( ){
-	printf("#### renewstr" );	
-	
+		
 	char* s = PyMem_Malloc( g_pyenstrlen + 1024 );
 	memcpy( s, g_pyenstr, g_pyenstrlen );
 	PyMem_Free( g_pyenstr );
@@ -81,14 +80,13 @@ static PyObject* pyo_def_enc( PyObject* self, PyObject* args ){
 #define SEP2 '\x10'
 
 int pyo_handle_enc_ref( PyObject* pyo, PyObject* ref,  int pos, int * offset ){
-	printf("pyo_handle_enc_ref %d, %d\n", pos, *offset );
+//	printf("pyo_handle_enc_ref %d, %d\n", pos, *offset );
 	int l = 0;
 	static char constr[1024];
 	if( ref == NULL ){		
 		Cls_Ref_Info* info = PyMem_Malloc( sizeof( Cls_Ref_Info ) );
 		info->no = 0;
 		info->pos = pos;
-
 		ref = PyCObject_FromVoidPtr( info , NULL );
 		PyDict_SetItem( g_enc_refs, PyInt_FromLong( pyo ), ref );
 	}
@@ -107,8 +105,8 @@ int pyo_handle_enc_ref( PyObject* pyo, PyObject* ref,  int pos, int * offset ){
 				if( _info->pos > info->pos ) _info->pos += ml;
 			}
 			if( *offset + ml > g_pyenstrlen ) pyenstrnew();
-			printf("memmove %d, %d , %d\n", info->pos + ml, info->pos, *offset - info->pos );
-			printf("memmove str %s\n", g_pyenstr + info->pos );
+//			printf("memmove %d, %d , %d\n", info->pos + ml, info->pos, *offset - info->pos );
+//			printf("memmove str %s\n", g_pyenstr + info->pos );
 
 			memmove( g_pyenstr + info->pos + ml, g_pyenstr+info->pos, *offset - info->pos );
 			memcpy( g_pyenstr + info->pos, constr, ml );
@@ -116,7 +114,7 @@ int pyo_handle_enc_ref( PyObject* pyo, PyObject* ref,  int pos, int * offset ){
 			l += ml;
 
 		}
-		l += sprintf( g_pyenstr + (*offset), "=" SEP "%d", info->no );	
+		l += sprintf( g_pyenstr + l + (*offset), "=" SEP "%d", info->no );	
 		return l;
 	}
 	return l;
@@ -159,7 +157,7 @@ int pyo_inter_encode( PyObject* pyo, char *cpt, int offset  ){
 		l = 0;
 		PyObject *ref = PyDict_GetItem(g_enc_refs, PyInt_FromLong(pyo) );
 		int ss = PyList_Size( pyo );
-		printf("size: %d\n", ss );
+//		printf("size: %d\n", ss );
 		if( offset + 1024 > g_pyenstrlen ) pyenstrnew();
 		if ( ref == NULL ){
 			l = sprintf( cpt,  "[" SEP "%d" SEP, ss );
