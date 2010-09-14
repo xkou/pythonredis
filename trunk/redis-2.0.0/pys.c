@@ -15,8 +15,7 @@ typedef struct _Cls_Ref_Info{
 } Cls_Ref_Info;
 int g_enc_count ;
 PyObject * g_enc_refs;
-
-PyObject **g_pyo_dicts;
+PyObject * g_dec_refs;
 
 static char * pyenstrnew( ){
 		
@@ -29,42 +28,53 @@ static char * pyenstrnew( ){
 }
 
 static void pyo_init(){
-	int l = 10;
-	g_pyo_dicts = PyMem_Malloc( l * sizeof (PyObject *) );
-	for( int i=0; i < l; i++){
-		g_pyo_dicts[i] = PyDict_New();
-	}
 	
 	g_pyenstrlen = 10240;
 	g_pyenstr = PyMem_Malloc( g_pyenstrlen );
 
 	g_enc_refs = PyDict_New();
+	g_dec_refs = PyDict_New();
 
 }
 
 static PyObject* pyo_def_enc( PyObject* self, PyObject* args ){
-	long lid;
+	PyObject* rule;
 	PyObject* cls;
 	PyObject* atts = NULL;
 	char* fakename = NULL;
 //	self;
 
-	if( !PyArg_ParseTuple( args, "IO|Os", &lid, &cls, &atts, &fakename ) ){
+	if( !PyArg_ParseTuple( args, "OO|Os", &rule, &cls, &atts, &fakename ) ){
+		PyErr_BadArgument();
 		return NULL;
 	}
 	
-	if( lid >= 10 ) return NULL;
-	PyObject *dict = g_pyo_dicts[lid];
+	if(! PyObject_HasAttrString( rule, "__rules__" )){
+		PyObject_SetAttrString( rule, "__rules__", PyDict_New() );
+	}
+
+
+	PyObject *dict = PyObject_GetAttrString( rule, "__rules__" );
 	PyObject *v = PyDict_GetItem(dict, cls );
-	if( v )  return NULL;
+	if( v ){
+		PyErr_SetString(PyExc_RuntimeError, "all readey set this rule");
+	  	return NULL;
+	}
 	
 	Cls_Def * pdef = PyMem_Malloc( sizeof (Cls_Def)  );
 	pdef->atts = NULL;
 	pdef->fakename = NULL;
 
+	if( fakename ){
+		pdef->fakename = strdup( fakename );
+	}
+	else{
+		pdef->fakename = strdup( PyString_AsString( PyObject_GetAttrString( cls, "__name__" ) ) );
+	}
+
 	if( atts != NULL){
 		Py_ssize_t ss= PyList_Size( atts );
-		pdef->atts = PyMem_Malloc( ss * (sizeof( char* ) +1 ));
+		pdef->atts = PyMem_Malloc( (ss + 1) *sizeof( char* ));
 		pdef->atts[ss] = NULL;
 		for( int i=0; i < ss; i++ ){
 			char *pname = PyString_AS_STRING(	PyList_GetItem( atts, i ) );
@@ -74,6 +84,7 @@ static PyObject* pyo_def_enc( PyObject* self, PyObject* args ){
 		}
 	}
 	PyDict_SetItem( dict, cls, PyCObject_FromVoidPtr( pdef, NULL ));
+	Py_RETURN_NONE;
 }
 
 #define SEP "\x10"
@@ -121,7 +132,7 @@ int pyo_handle_enc_ref( PyObject* pyo, PyObject* ref,  int pos, int * offset ){
 }
 
 
-int pyo_inter_encode( PyObject* pyo, char *cpt, int offset  ){
+int pyo_inter_encode( PyObject* pyo, char *cpt, int offset, PyObject* rule  ){
 	int l = 1;
 	static char constr[1024];
 	if( pyo == Py_None ) *cpt = ',';
@@ -153,11 +164,10 @@ int pyo_inter_encode( PyObject* pyo, char *cpt, int offset  ){
 			l = sprintf( g_pyenstr + offset,"%f", db );
 		}
 	}
-	else if( PyList_Check( pyo ) ){
+	else if( PyList_CheckExact( pyo ) ){
 		l = 0;
 		PyObject *ref = PyDict_GetItem(g_enc_refs, PyInt_FromLong(pyo) );
 		int ss = PyList_Size( pyo );
-//		printf("size: %d\n", ss );
 		if( offset + 1024 > g_pyenstrlen ) pyenstrnew();
 		if ( ref == NULL ){
 			l = sprintf( cpt,  "[" SEP "%d" SEP, ss );
@@ -166,7 +176,7 @@ int pyo_inter_encode( PyObject* pyo, char *cpt, int offset  ){
 		if( r ) return r;
 		for( int i=0; i < ss; i++){
 			PyObject* o = PyList_GET_ITEM( pyo, i );
-			int l2 = pyo_inter_encode( o, cpt+l,offset + l );
+			int l2 = pyo_inter_encode( o, cpt+l,offset + l , rule );
 			if( l2 == 0 ) return 0;
 			l = l + l2;
 			*(cpt+l) = SEP2;
@@ -176,21 +186,271 @@ int pyo_inter_encode( PyObject* pyo, char *cpt, int offset  ){
 		l++;
 
 	}
+	else if( PyDict_CheckExact( pyo )){
+		l = 0;
+		PyObject *ref = PyDict_GetItem( g_enc_refs, PyInt_FromLong( pyo ) );
+		int ss = PyList_Size( pyo );
+		if( offset + 1024 > g_pyenstrlen ) pyenstrnew();
+		if( ref == NULL ){
+			strcpy( cpt, "{" SEP SEP );
+			l+=3;
+		}
+		int r = pyo_handle_enc_ref( pyo, ref, l + offset, &offset );
+		if( r ) return r;
+		PyObject *k, *v; Py_ssize_t pos = 0;
+		while( PyDict_Next( pyo, &pos, &k, &v )){
+			if(! PyString_CheckExact( k ) ){
+				k = PyObject_Str( k );
+			}
+
+			char *buff; Py_ssize_t ss;
+			int r = PyString_AsStringAndSize( k, &buff, &ss );
+			if( r == -1) return 0;
+			strncpy( cpt + l, buff, ss );
+			l += ss;
+			(cpt +l)[0] = SEP2;
+			++l;
+			int l2 = pyo_inter_encode( v, cpt+l, offset+l, rule );
+			if( l2 == 0 ) return 0;
+			l = l+ l2;
+			*(cpt+l) = SEP2;
+			++l;
+			
+		}
+		strcpy( cpt +l, SEP "}" );
+		l+=3;
+	}
+	else if( PyString_CheckExact( pyo ) ){
+		char *buff;
+		l = 0;
+		Py_ssize_t ss;
+		if( -1 == PyString_AsStringAndSize( pyo, &buff, &ss ) ){
+			return 0;
+		}
+		if( offset + 1024 > g_pyenstrlen ) pyenstrnew();
+		(cpt+l)[0] = SEP2;
+		++l;
+		strncpy( cpt + l, buff, ss );
+		l += ss;
+	}
 	else{
-		printf("!!!!!Error\n");
-		PyErr_SetObject(PyExc_TypeError , pyo );
-		return NULL;
+		l = 0;
+		PyObject * ref = PyDict_GetItem( g_enc_refs, PyInt_FromLong( pyo ) );
+		Cls_Def * def = NULL;
+		if( offset + 1024 > g_pyenstrlen) pyenstrnew();
+		if( ref == NULL ){
+			PyObject *type = PyObject_GetAttrString( pyo, "__class__" );
+			PyObject *rdict = NULL;
+			
+			rdict = PyObject_GetAttrString( rule ,"__rules__" );
+			if( rdict ){
+				PyObject* ds = PyDict_GetItem( rdict, type );
+				if( ds ) {
+					def = PyCObject_AsVoidPtr( ds );
+				}
+			}
+			if(  def == NULL ) {
+				PyErr_Format( PyExc_Exception, "cant find rule for '%s'", PyString_AsString( PyObject_GetAttrString( type, "__name__" ) ) );
+				return NULL;
+			}
+			
+			l = sprintf( cpt, "{" SEP "%s" SEP, def->fakename );
+		}
+		int r = pyo_handle_enc_ref( pyo, ref, l + offset, &offset );
+		if( r ) return r;
+		PyObject *odict = PyObject_GetAttrString( pyo , "__dict__");
+		if( odict ){
+			int i = 0;
+			while( 1 ){
+				char *name = def->atts[i];
+				if( name == NULL ) break;
+				PyObject * v = PyDict_GetItemString( odict, name );
+				if( v ){
+					strcpy( cpt + l, name );
+					l += strlen( name );
+					(cpt +l)[0] = SEP2;
+					l ++;
+					int l2 = pyo_inter_encode( v, cpt + l, offset + l, rule );
+					if( l2 == 0 ) return NULL;
+					l += l2;
+					(cpt+l)[0] = SEP2;
+					l++;
+				}
+				i ++;
+			}
+		}
+		strcpy( cpt + l, SEP "}" );
+		l += 2;	
 	}
 
 	return l;
 }
 
-PyObject* pyo_encode(PyObject* self, PyObject * o ){
+int pyo_handle_dec_ref( char *buff, PyObject * o ){
+	int l = 0;
+	while (1){
+		char ch = buff[l];
+
+		if( ch > '0' && ch < '9' ){
+				
+		}else if( ch == SEP2 ){
+			buff[l] = 0;
+			PyDict_SetItem( g_dec_refs, PyString_FromString( buff ), o );
+			return l;
+		}
+		else{
+			return 0;
+		}
+		l ++;
+	}
+}
+
+PyObject* pyo_inter_decode( char * buff, int * len, PyObject *rule ){
+	if( buff[0] == SEP2 ){ // string
+		int i = 1;
+		while( buff[i] != 0 && buff[i] != SEP2 ) ++i;
+		*len = i ;
+		return PyString_FromStringAndSize( buff + 1, i - 1 );
+	}	
+	else if( buff[0] == '<' ){
+		*len = 1;
+		Py_RETURN_FALSE;
+	}
+	else if( buff[0] == '=' ){
+		int l=2;
+		char *start = buff + l;
+		while( buff[l] > '0' && buff[l] < '9' ){
+			l++;
+		}
+		if( buff[l] == SEP2 ){
+			buff[l] = 0;
+			PyObject * r = PyDict_GetItemString(g_dec_refs, start );
+			Py_XINCREF( r );
+			*len = l;
+			return r;
+		}
+		else{
+			return 0;
+		}
+	}
+	else if( buff[0] == '>' ){
+		*len = 1;
+		Py_RETURN_TRUE;
+	}
+	else if( buff[0] == ',' ){
+		*len = 1;
+		Py_RETURN_NONE;
+	}
+	else if( buff[0] == '[' ){
+		int l = 2;
+		char *start = buff + 2;
+		while(1){
+			
+			if( buff[l] > '0' && buff[l] < '9' ){
+				l++;
+				continue;
+			}
+			else if( buff[l] == SEP2 ){
+				buff[l] = 0;
+				break;
+			}
+			else{
+				PyErr_SetString( PyExc_Exception, "list expect list size , but error" );
+				return NULL;
+			}
+		}
+		// get list size
+		PyObject *r;
+		l ++;
+		int ss = atoi( start );
+		r = PyList_New( ss );
+
+		if( buff[l] == ':' ){
+			l+=2;
+			int l2 = pyo_handle_dec_ref( buff+l, r );
+			if( l2 == 0 ) return 0;
+			l += l2 +1;
+		}
+
+		for( int i =0; i < ss; i++){
+
+			int outlen = 0;
+			PyObject * o = pyo_inter_decode( buff + l, &outlen, rule );
+			if( o == NULL ) return NULL;
+			PyList_SET_ITEM( r, i, o );
+			l += outlen + 1 ;
+		}
+		if( buff[l] == ']' ){
+			*len = l + 1;
+			return r;
+		}else{
+			return 0;
+		}
+	}
+	else if( buff[0] == '{' && buff[1] == SEP2 && buff[2] == SEP2 ){
+		int l = 3;
+		PyObject * r = PyDict_New();
+		while( 1 ){
+			char c = buff[l];
+			if( c == 0 ) return 0;
+			else if( c == SEP2 ){
+				if( buff[l+1] == '}' ){
+					*len = l + 2;
+					return r;
+				}
+			}
+			else if( c == ':' ){
+				l+=2;
+				int l2 = pyo_handle_dec_ref( buff+l, r );
+				if( l2 == 0 ) return 0;
+				l += l2 + 1;
+			}
+			else{
+				char *start = buff + l;
+				while ( 1 ){
+					if( buff[l] == SEP2 || buff[l] == 0 ){
+						buff[l] = 0;
+						break;
+					}
+					l++;	
+				}
+				l ++;
+				int outlen = 0;
+				PyObject * v = pyo_inter_decode(  buff + l, &outlen, rule );
+				if( v == NULL ) return NULL;
+				PyDict_SetItemString( r, start, v );
+				l += outlen;
+				l++;
+			}
+
+		}
+
+	}
+	else{
+
+	}
+}
+
+PyObject* _pyo_decode( char * buff, PyObject *rule ){
+	PyDict_Clear( g_dec_refs );
+	int len = 0;
+	return pyo_inter_decode( buff, &len, rule );
+}
+
+PyObject* pyo_decode( PyObject* self, PyObject * args ){
+	PyObject *buf = PyTuple_GET_ITEM( args, 0 );
+	PyObject *rule = PyTuple_GET_ITEM( args, 1 );
+	return _pyo_decode( PyString_AsString( buf ), rule );
+}
+
+PyObject* pyo_encode(PyObject* self, PyObject * args ){
 	
 	PyDict_Clear( g_enc_refs);
+	PyObject * rule = NULL;
 	g_enc_count = 0;
-	o = PyTuple_GET_ITEM( o, 0 );
-	int l = pyo_inter_encode( o, g_pyenstr, 0 );
+	PyObject * o = PyTuple_GET_ITEM( args, 0 );
+	rule = PyTuple_GET_ITEM( args, 1 );
+	int l = pyo_inter_encode( o, g_pyenstr, 0, rule );
 	// 清除 g_enc_refs 的内容
 	PyObject *k, *v;
 	Py_ssize_t pos = 0;
@@ -201,16 +461,14 @@ PyObject* pyo_encode(PyObject* self, PyObject * o ){
 		PyMem_Free( _info );
 	};
 
-
-//	int l = 1;
 	if( l == 0 ) return NULL;
-//	Py_RETURN_NONE;
 	return PyString_FromStringAndSize( g_pyenstr, l );
 }
 
 static PyMethodDef pyMds[] = {
 	{ "def_enc", pyo_def_enc, METH_VARARGS, "define encode rule"},
 	{ "enc", pyo_encode, METH_VARARGS, "encode object"},
+	{ "dec", pyo_decode, METH_VARARGS, "decode string to python object"},
 	{ NULL, NULL, NULL, NULL }
 };
 int initPyVM(){
