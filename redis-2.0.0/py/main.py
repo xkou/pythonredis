@@ -3,20 +3,40 @@ print "run now"
 import sys
 #print sys.path
 import time
-print pyjot.enc( [None] )
-print pyjot.enc( [None] )
-i = 0
-a = [9999999]
-o = [None,True,None, 123, a, 8  ]
 
-o = [False,True,[True] * 30, a * 90, 8, a,  7, a ,[444.444] * 40 ] * 14
-o[1] = o
-print o
 
-print len( pyjot.enc( o )  )
-print pyjot.enc( o )
+class A: pass
+
+class R : pass
+pyjot.def_enc(R, A, ["m", "n"] );
+
+
+print A.__dict__
+print R.__dict__
+
+o = A()
+o.a = 1
+
+o.m = "lllll"
+o.n = o
+
+
+a = [None, None, True, False]
+b = [ True, False, [None, False] ]
+a[1] = b
+a[2] = b
+a[3] =a 
+
+a = dict( m = True, n= False )
+a['ooo'] = a
+a[1] = a
+
+buf = pyjot.enc( a, R )
+print buf
+o = pyjot.dec( buf, R )
+print pyjot.enc( o, R )
 t = time.time()
-for i in range(1000):pyjot.enc( o )
+#for i in range(100000):pyjot.enc( o, R )
 t2 = time.time()
 print t2 - t
 
