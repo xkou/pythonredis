@@ -8,7 +8,7 @@ import time
 class A: pass
 
 class R : pass
-pyjot.def_enc(R, A, ["m", "n"] );
+#pyjot.def_enc(R, A, ["m", "n"] );
 
 
 print A.__dict__
@@ -21,22 +21,15 @@ o.m = "lllll"
 o.n = o
 
 
-a = [None, None, True, False]
-b = [ True, False, [None, False] ]
-a[1] = b
-a[2] = b
-a[3] =a 
 
-a = dict( m = True, n= False )
-a['ooo'] = a
-a[1] = a
 
-buf = pyjot.enc( a, R )
+buf = pyjot.enc( o, R )
 print buf
-o = pyjot.dec( buf, R )
-print pyjot.enc( o, R )
+#o = pyjot.dec( buf, R )
+#print pyjot.enc( o, R )
 t = time.time()
-#for i in range(100000):pyjot.enc( o, R )
+for i in range(1000):
+	pyjot.enc( [ 1, True, None, [1, 987847 ] * 250 ] , R )
 t2 = time.time()
 print t2 - t
 
