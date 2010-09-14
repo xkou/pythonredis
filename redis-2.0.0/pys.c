@@ -188,8 +188,7 @@ int pyo_inter_encode( PyObject* pyo, char *cpt, int offset, PyObject* rule  ){
 	}
 	else if( PyDict_CheckExact( pyo )){
 		l = 0;
-		PyObject *ref = PyDict_GetItem( g_enc_refs, PyInt_FromLong( pyo ) );
-		int ss = PyList_Size( pyo );
+		PyObject *ref = PyDict_GetItem( g_enc_refs, PyInt_FromLong( (long)pyo ) );
 		if( offset + 1024 > g_pyenstrlen ) pyenstrnew();
 		if( ref == NULL ){
 			strcpy( cpt, "{" SEP SEP );
@@ -432,9 +431,10 @@ PyObject* pyo_inter_decode( char * buff, int * len, PyObject *rule ){
 }
 
 PyObject* _pyo_decode( char * buff, PyObject *rule ){
-	PyDict_Clear( g_dec_refs );
 	int len = 0;
-	return pyo_inter_decode( buff, &len, rule );
+	PyObject* r= pyo_inter_decode( buff, &len, rule );
+	PyDict_Clear( g_dec_refs );
+	return r;
 }
 
 PyObject* pyo_decode( PyObject* self, PyObject * args ){
@@ -456,8 +456,8 @@ PyObject* pyo_encode(PyObject* self, PyObject * args ){
 	Py_ssize_t pos = 0;
 	while( PyDict_Next( g_enc_refs, &pos, &k, &v )){
 		Cls_Ref_Info * _info = PyCObject_AsVoidPtr( v );
-		Py_XINCREF( k );
-		Py_XINCREF( v );
+		Py_XDECREF( k );
+		Py_XDECREF( v );
 		PyMem_Free( _info );
 	};
 
