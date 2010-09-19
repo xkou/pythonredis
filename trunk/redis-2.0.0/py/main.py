@@ -8,14 +8,17 @@ import time
 class A: pass
 
 class R : pass
-#pyjot.def_enc(R, A, ["m", "n"] );
+pyjot.def_enc(R, A, ["m", "n"] );
 
+class B( A ):pass
+pyjot.def_enc(R, B );
 
 print A.__dict__
 print R.__dict__
 
 o = A()
 o.a = 1
+
 
 o.m = "lllll"
 o.n = o
@@ -25,6 +28,17 @@ o.n = o
 
 buf = pyjot.enc( o, R )
 print buf
+
+o = B()
+o.a = 1
+o.n = o
+buf = pyjot.enc( o, R )
+print buf
+o = pyjot.dec( buf, R )
+print o.__dict__
+
+
+
 #o = pyjot.dec( buf, R )
 #print pyjot.enc( o, R )
 t = time.time()
