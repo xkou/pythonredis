@@ -7,6 +7,7 @@ int g_pyenstrlen = 0;
 typedef struct _Cls_Def{
 	char **atts;
 	char *fakename;
+	int  atts_len ;
 } Cls_Def;
 
 typedef struct _Cls_Ref_Info{
@@ -53,9 +54,15 @@ static PyObject* pyo_def_enc( PyObject* self, PyObject* args ){
 		PyObject_SetAttrString( rule, "__rules__", PyDict_New() );
 	}
 
+	if(! PyObject_HasAttrString( rule, "__names__")){
+		PyObject_SetAttrString( rule, "__names__", PyDict_New() );
+	}
+
 
 	PyObject *dict = PyObject_GetAttrString( rule, "__rules__" );
-	PyObject *v = PyDict_GetItem(dict, cls );
+	PyObject *dictNs = PyObject_GetAttrString( rule, "__names__" );
+
+	PyObject *v = PyDict_GetItem( dict, cls );
 	if( v ){
 		PyErr_SetString(PyExc_RuntimeError, "all readey set this rule");
 	  	return NULL;
@@ -63,6 +70,7 @@ static PyObject* pyo_def_enc( PyObject* self, PyObject* args ){
 	
 	Cls_Def * pdef = PyMem_Malloc( sizeof (Cls_Def)  );
 	pdef->atts = NULL;
+	pdef->atts_len = 0;
 	pdef->fakename = NULL;
 
 	if( fakename ){
@@ -72,14 +80,41 @@ static PyObject* pyo_def_enc( PyObject* self, PyObject* args ){
 		pdef->fakename = strdup( PyString_AsString( PyObject_GetAttrString( cls, "__name__" ) ) );
 	}
 
+	PyDict_SetItemString( dictNs, pdef->fakename, cls );
+
 	if( atts != NULL){
 		Py_ssize_t ss= PyList_Size( atts );
 		pdef->atts = PyMem_Malloc( (ss + 1) *sizeof( char* ));
 		pdef->atts[ss] = NULL;
+		pdef->atts_len = ss;
 		for( int i=0; i < ss; i++ ){
 			char *pname = PyString_AS_STRING(	PyList_GetItem( atts, i ) );
 			if( pname ){
 				pdef->atts[i] = strdup( pname );
+			}
+		}
+	}
+	else{
+		// look up parent class rule
+		PyObject * pcls = cls;
+		while( 1 ){
+			PyObject* bases = PyObject_GetAttrString( pcls, "__bases__" );
+			if( bases == NULL ) return NULL;
+			PyTuple_GET_SIZE(bases ) && (pcls = PyTuple_GET_ITEM( bases, 0 ));
+			if( pcls ){
+				PyObject *pv = PyDict_GetItem( dict, pcls );
+				if( pv ){
+					Cls_Def * ppdef = PyCObject_AsVoidPtr( pv );
+					pdef->atts = PyMem_Malloc( ( ppdef->atts_len+1 ) * sizeof( char*) );
+					for( int i = 0; i < ppdef->atts_len + 1; i++ ){
+						pdef->atts[i] = ppdef->atts[i];
+					}
+					pdef->atts[ppdef->atts_len] = NULL;
+					break;
+				}
+			}
+			else{
+				break;
 			}
 		}
 	}
@@ -425,14 +460,106 @@ PyObject* pyo_inter_decode( char * buff, int * len, PyObject *rule ){
 		}
 
 	}
-	else{
+	else if( buff[0] == '{' && buff[1] == SEP2 && buff[2] != SEP2 ){
+		int l = 2;
+		char *cname = buff + 2;
+		while( 1 ){
+			char ch = buff[l];
+			if( ch == 0 ) return 0;
+			else if( ch == SEP2 ){
+				buff[l] = 0;
+				break;
+			}
+			++ l;
+		}
+		l++;
 
+		PyObject *dictNs = PyObject_GetAttrString( rule, "__names__" );
+		if( dictNs == NULL ){
+			PyErr_SetString(PyExc_RuntimeError, "no rule found");
+			return 0;
+		}	
+		
+		PyObject *cls = PyDict_GetItemString( dictNs, cname );
+		if( cls == NULL ){
+			PyErr_Format( PyExc_RuntimeError, "cant find name: %s", cname );
+			return 0;
+		}
+		
+		PyObject *d = PyDict_New();
+		PyObject *r = PyInstance_NewRaw( cls, d );
+		Py_XDECREF( d );
+		while( 1 ){
+			char ch = buff[l];
+			if ( ch == 0 ) return 0;
+			else if( ch == ':' ){
+				l+=2;
+				int l2 = pyo_handle_dec_ref( buff+l, r );
+				if( l2 == 0 ) return 0;
+				l += l2 + 1;
+			}
+			else if( ch == SEP2 && buff[l+1] == '}' ){
+				*len = l +2;
+				return r;
+			}
+			else{
+				if ( ch == SEP2 ){
+					PyErr_SetString( PyExc_RuntimeError, "found \\0x10 ");
+					return 0;
+				}
+				char * start = buff + l;
+				while( 1 ){
+					if( buff[l] == SEP2 ){
+						buff[l] = 0;
+						break;
+					}
+					else if( buff[l] == 0 ){
+						return 0;
+					}
+					++l;
+				}
+				++ l;
+				int outlen = 0;
+				PyObject * v = pyo_inter_decode(  buff + l, &outlen, rule );
+				if( v == NULL ) return NULL;
+				PyDict_SetItemString( d, start, v );
+				l += outlen;
+				l++;
+			}
+		}
+
+	}
+	else{ // number
+		char *start = buff;
+		int i = 0;
+		while( 1 ){
+			if ( buff[i] == SEP2 || buff[i] == 0 ){
+				buff[i] == 0;
+				*len = i;
+				if( strchr( start, '.') ){
+					return PyFloat_FromString( start, NULL );
+				}
+				else if( i <=8 ){
+					return PyInt_FromString(start, NULL, 10 );
+				}
+				else{
+					return PyLong_FromString( start, NULL, 10 );
+				}
+				break;
+			}
+			i++;
+		}
 	}
 }
 
 PyObject* _pyo_decode( char * buff, PyObject *rule ){
 	int len = 0;
 	PyObject* r= pyo_inter_decode( buff, &len, rule );
+	PyObject *k, *v;
+	Py_ssize_t pos = 0;
+	while( PyDict_Next( g_dec_refs, &pos, &k, &v ) ){
+	//	Py_XDECREF(k);
+	};
 	PyDict_Clear( g_dec_refs );
 	return r;
 }
