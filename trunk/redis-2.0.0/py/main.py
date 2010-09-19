@@ -26,11 +26,12 @@ o.n = o
 
 
 
+
 buf = pyjot.enc( o, R )
 print buf
 
 o = B()
-o.a = 1
+o.m = [False, True, 1, 1.3, -10000, "pppp" ]
 o.n = o
 buf = pyjot.enc( o, R )
 print buf

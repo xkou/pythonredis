@@ -534,10 +534,10 @@ PyObject* pyo_inter_decode( char * buff, int * len, PyObject *rule ){
 		int i = 0;
 		while( 1 ){
 			if ( buff[i] == SEP2 || buff[i] == 0 ){
-				buff[i] == 0;
+				buff[i] = 0;
 				*len = i;
 				if( strchr( start, '.') ){
-					return PyFloat_FromString( start, NULL );
+					return PyFloat_FromString( PyString_FromString(start), NULL );
 				}
 				else if( i <=8 ){
 					return PyInt_FromString(start, NULL, 10 );
