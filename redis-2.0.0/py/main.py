@@ -33,6 +33,7 @@ pyjot.set("111", o )
 
 print "get", pyjot.get("111")
 
+
 buf = pyjot.enc( o, R )
 print buf
 
