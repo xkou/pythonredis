@@ -621,7 +621,7 @@ PyObject* pyo_save(PyObject *self, PyObject *args ){
 
 PyObject* pyo_get( PyObject *self, PyObject *args){
 	PyObject * k  = PyTuple_GET_ITEM( args, 0 );
-	char *key; int len;
+	char *key; Py_ssize_t len;
 	PyString_AsStringAndSize( k, &key, &len );
 	return pyget( key, len );
 }
