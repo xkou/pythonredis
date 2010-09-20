@@ -619,6 +619,13 @@ PyObject* pyo_save(PyObject *self, PyObject *args ){
 	return 0;
 }
 
+PyObject* pyo_get( PyObject *self, PyObject *args){
+	PyObject * k  = PyTuple_GET_ITEM( args, 0 );
+	char *key; int len;
+	PyString_AsStringAndSize( k, &key, &len );
+	return pyget( key, len );
+}
+
 static PyMethodDef pyMds[] = {
 	{ "def_enc", pyo_def_enc, METH_VARARGS, "define encode rule"},
 	{ "enc", pyo_encode, METH_VARARGS, "encode object"},
@@ -626,6 +633,7 @@ static PyMethodDef pyMds[] = {
 	{ "rule", pyo_set_global_rule, METH_VARARGS, "set global rule"},
 	{ "set", pyo_set_object2, METH_VARARGS, "set key"},
 	{ "save", pyo_save, METH_VARARGS, "save"},
+	{ "get",pyo_get, METH_VARARGS, "get"},
 	{ NULL, NULL, NULL, NULL }
 };
 int initPyVM(){
