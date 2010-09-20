@@ -77,6 +77,7 @@
 #include "zipmap.h" /* Compact dictionary-alike data structure */
 #include "sha1.h"   /* SHA1 is used for DEBUG DIGEST */
 #include "release.h" /* Release and/or git repository information */
+#include "pys.h"
 
 /* Error codes */
 #define REDIS_OK                0
@@ -3546,6 +3547,16 @@ static int rdbSaveStringObject(FILE *fp, robj *obj) {
     return retval;
 }
 
+static int rdbSavePyObject(FILE* fp, robj *obj){
+	int retval;
+	char *s = _pyo_encode( obj->ptr, g_pyo_enc_rule, &retval );
+	if( retval > 0  ){
+		printf(">> save %s\n", s );
+		retval = rdbSaveRawString( fp, s, retval );
+	}
+	return retval;
+}
+
 /* Save a double value. Doubles are saved as strings prefixed by an unsigned
  * 8 bit integer specifing the length of the representation.
  * This 8 bit integer has special values in order to specify the following
@@ -3594,7 +3605,11 @@ static int rdbSaveObject(FILE *fp, robj *o) {
     if (o->type == REDIS_STRING) {
         /* Save a string value */
         if (rdbSaveStringObject(fp,o) == -1) return -1;
-    } else if (o->type == REDIS_LIST) {
+    } 
+	else if( o->type == REDIS_PYOBJ ){
+		if( rdbSavePyObject(fp, o ) == -1 ) return -1;
+	}
+	else if (o->type == REDIS_LIST) {
         /* Save a list value */
         list *list = o->ptr;
         listIter li;
@@ -3980,7 +3995,15 @@ static robj *rdbLoadObject(int type, FILE *fp) {
         /* Read string value */
         if ((o = rdbLoadEncodedStringObject(fp)) == NULL) return NULL;
         o = tryObjectEncoding(o);
-    } else if (type == REDIS_LIST || type == REDIS_SET) {
+    } 
+	else if( type == REDIS_PYOBJ ){
+		o = rdbLoadStringObject( fp );
+		if( o == NULL ) return NULL;
+		printf("load:`%s`\n", o->ptr );
+		PyObject *pyo = _pyo_decode( o->ptr, g_pyo_enc_rule );
+		o->ptr = pyo;
+	}
+	else if (type == REDIS_LIST || type == REDIS_SET) {
         /* Read list/set value */
         uint32_t listlen;
 
@@ -10821,8 +10844,6 @@ static void usage() {
 int main(int argc, char **argv) {
     time_t start;
 	
-	if (initPyVM() ) return;
-	return;
     initServerConfig();
     if (argc == 2) {
         if (strcmp(argv[1], "-v") == 0 ||
@@ -10838,6 +10859,7 @@ int main(int argc, char **argv) {
     if (server.daemonize) daemonize();
 
     initServer();
+	if (initPyVM() ) return;
     redisLog(REDIS_NOTICE,"Server started, Redis version " REDIS_VERSION);
 #ifdef __linux__
     linuxOvercommitMemoryWarning();
@@ -10983,7 +11005,63 @@ static void setupSigSegvAction(void) {
 #endif /* HAVE_BACKTRACE */
 
 
+PyObject *pyo_set_object( PyObject * self, PyObject *args ){
+	PyObject *k = PyTuple_GET_ITEM( args, 0 );
+	PyObject *v = PyTuple_GET_ITEM( args, 1 );
+	int  expire = 0;
 
+	if( PyTuple_Size( args ) >= 3 ){
+		expire = PyTuple_GET_ITEM( args, 2 );
+	}
+	int keysize = 0;	
+	char *s;
+   	PyString_AsStringAndSize( k, &s, &keysize );
+	robj* key = createStringObject( s, keysize );
+
+	robj* val = createObject( REDIS_PYOBJ, v );
+	redisDb* db = server.db;	
+	int retval = 0;
+    long seconds = 0; /* initialized to avoid an harmness warning */
+	int nx = 1;
+    if (nx) deleteIfVolatile(db,key);
+    retval = dictAdd(db->dict,key,val);
+    if (retval == DICT_ERR) {
+        if (!nx) {
+            /* If the key is about a swapped value, we want a new key object
+             * to overwrite the old. So we delete the old key in the database.
+             * This will also make sure that swap pages about the old object
+             * will be marked as free. */
+            if (server.vm_enabled && deleteIfSwapped(db,key))
+                incrRefCount(key);
+            dictReplace(db->dict,key,val);
+            incrRefCount(val);
+        } else {
+			Py_RETURN_NONE;
+		}
+    } else {
+        incrRefCount(key);
+        incrRefCount(val);
+    }
+    server.dirty++;
+    removeExpire(db,key);
+    if (expire) setExpire(db,key,time(NULL)+seconds);
+
+
+	Py_RETURN_NONE;
+
+}
+
+int pysave(){
+	if (server.bgsavechildpid != -1) {
+        return 1;
+    }
+    if (rdbSave(server.dbfilename) == REDIS_OK) {
+		return 1;
+	}
+	else{
+		return 0;
+	}
+}
 /* The End */
 
 

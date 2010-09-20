@@ -10,6 +10,9 @@ class A: pass
 class R : pass
 pyjot.def_enc(R, A, ["m", "n"] );
 
+
+pyjot.rule( R )
+
 class B( A ):pass
 pyjot.def_enc(R, B );
 
@@ -25,8 +28,8 @@ o.n = o
 
 
 
-
-
+pyjot.set("111", o )
+pyjot.save()
 buf = pyjot.enc( o, R )
 print buf
 
