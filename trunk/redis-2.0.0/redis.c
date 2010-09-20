@@ -11016,7 +11016,7 @@ PyObject *pyo_set_object( PyObject * self, PyObject *args ){
 	if( PyTuple_Size( args ) >= 3 ){
 		expire = PyTuple_GET_ITEM( args, 2 );
 	}
-	int keysize = 0;	
+	Py_ssize_t keysize = 0;	
 	char *s;
    	PyString_AsStringAndSize( k, &s, &keysize );
 	robj* key = createStringObject( s, keysize );
