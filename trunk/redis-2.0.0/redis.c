@@ -11028,7 +11028,6 @@ PyObject *pyo_set_object( PyObject * self, PyObject *args ){
 	int nx = 1;
     if (nx) deleteIfVolatile(db,key);
     retval = dictAdd(db->dict,key,val);
-	printf("set %d->%d\n", val, val->ptr );
     if (retval == DICT_ERR) {
         if (!nx) {
             /* If the key is about a swapped value, we want a new key object
@@ -11068,9 +11067,7 @@ int pysave(){
 }
 
 PyObject * pyget( char *key, int len ){
-
 	robj * v = lookupKeyRead( server.db, createStringObject( key, len ) );
-	printf(">>>get %d->%d\n", v, v->ptr );
 	Py_XINCREF( v->ptr );
    	return  v->ptr;
 }
