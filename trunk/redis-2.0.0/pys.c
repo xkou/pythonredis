@@ -1,8 +1,11 @@
 #include <stdlib.h>
 #include "pys.h"
+#include "redis.h"
 
 char *g_pyenstr = NULL;
 int g_pyenstrlen = 0;
+
+PyObject *g_pyo_enc_rule;
 
 typedef struct _Cls_Def{
 	char **atts;
@@ -570,13 +573,9 @@ PyObject* pyo_decode( PyObject* self, PyObject * args ){
 	return _pyo_decode( PyString_AsString( buf ), rule );
 }
 
-PyObject* pyo_encode(PyObject* self, PyObject * args ){
-	
+char * _pyo_encode( PyObject* o, PyObject * rule, int *len ){
 	PyDict_Clear( g_enc_refs);
-	PyObject * rule = NULL;
-	g_enc_count = 0;
-	PyObject * o = PyTuple_GET_ITEM( args, 0 );
-	rule = PyTuple_GET_ITEM( args, 1 );
+	g_enc_count = 0 ;
 	int l = pyo_inter_encode( o, g_pyenstr, 0, rule );
 	// 清除 g_enc_refs 的内容
 	PyObject *k, *v;
@@ -587,15 +586,46 @@ PyObject* pyo_encode(PyObject* self, PyObject * args ){
 		Py_XDECREF( v );
 		PyMem_Free( _info );
 	};
+	*len = l;
+	return g_pyenstr;
+}
 
+PyObject* pyo_encode(PyObject* self, PyObject * args ){
+	
+	PyObject * rule = NULL;
+	PyObject * o = PyTuple_GET_ITEM( args, 0 );
+	rule = PyTuple_GET_ITEM( args, 1 );
+	int l = 0;
+	_pyo_encode( o, rule, &l );
 	if( l == 0 ) return NULL;
 	return PyString_FromStringAndSize( g_pyenstr, l );
+}
+
+PyObject * pyo_set_global_rule ( PyObject* self, PyObject* args ){
+	PyObject *o = PyTuple_GET_ITEM( args, 0 );
+	g_pyo_enc_rule = o;
+	Py_RETURN_NONE;
+}
+
+PyObject *pyo_set_object2( PyObject *self, PyObject *args ){
+	return pyo_set_object( self, args );
+}
+
+PyObject* pyo_save(PyObject *self, PyObject *args ){
+	if( pysave() ){
+		Py_RETURN_NONE;
+	}
+	PyErr_SetString( PyExc_RuntimeError, "save error");
+	return 0;
 }
 
 static PyMethodDef pyMds[] = {
 	{ "def_enc", pyo_def_enc, METH_VARARGS, "define encode rule"},
 	{ "enc", pyo_encode, METH_VARARGS, "encode object"},
 	{ "dec", pyo_decode, METH_VARARGS, "decode string to python object"},
+	{ "rule", pyo_set_global_rule, METH_VARARGS, "set global rule"},
+	{ "set", pyo_set_object2, METH_VARARGS, "set key"},
+	{ "save", pyo_save, METH_VARARGS, "save"},
 	{ NULL, NULL, NULL, NULL }
 };
 int initPyVM(){
