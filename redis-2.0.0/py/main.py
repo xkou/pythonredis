@@ -29,7 +29,10 @@ o.n = o
 
 
 pyjot.set("111", o )
-pyjot.save()
+#pyjot.save()
+
+print "get", pyjot.get("111")
+
 buf = pyjot.enc( o, R )
 print buf
 

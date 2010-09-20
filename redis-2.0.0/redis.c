@@ -3998,10 +3998,12 @@ static robj *rdbLoadObject(int type, FILE *fp) {
     } 
 	else if( type == REDIS_PYOBJ ){
 		o = rdbLoadStringObject( fp );
+
 		if( o == NULL ) return NULL;
+		decrRefCount( o );
 		printf("load:`%s`\n", o->ptr );
 		PyObject *pyo = _pyo_decode( o->ptr, g_pyo_enc_rule );
-		o->ptr = pyo;
+		o = createObject( REDIS_PYOBJ, pyo );
 	}
 	else if (type == REDIS_LIST || type == REDIS_SET) {
         /* Read list/set value */
@@ -10872,6 +10874,7 @@ int main(int argc, char **argv) {
         if (rdbLoad(server.dbfilename) == REDIS_OK)
             redisLog(REDIS_NOTICE,"DB loaded from disk: %ld seconds",time(NULL)-start);
     }
+	
     redisLog(REDIS_NOTICE,"The server is now ready to accept connections on port %d", server.port);
     aeSetBeforeSleepProc(server.el,beforeSleep);
     aeMain(server.el);
@@ -11017,7 +11020,7 @@ PyObject *pyo_set_object( PyObject * self, PyObject *args ){
 	char *s;
    	PyString_AsStringAndSize( k, &s, &keysize );
 	robj* key = createStringObject( s, keysize );
-
+	Py_XINCREF( v );
 	robj* val = createObject( REDIS_PYOBJ, v );
 	redisDb* db = server.db;	
 	int retval = 0;
@@ -11025,6 +11028,7 @@ PyObject *pyo_set_object( PyObject * self, PyObject *args ){
 	int nx = 1;
     if (nx) deleteIfVolatile(db,key);
     retval = dictAdd(db->dict,key,val);
+	printf("set %d->%d\n", val, val->ptr );
     if (retval == DICT_ERR) {
         if (!nx) {
             /* If the key is about a swapped value, we want a new key object
@@ -11062,6 +11066,15 @@ int pysave(){
 		return 0;
 	}
 }
+
+PyObject * pyget( char *key, int len ){
+
+	robj * v = lookupKeyRead( server.db, createStringObject( key, len ) );
+	printf(">>>get %d->%d\n", v, v->ptr );
+	Py_XINCREF( v->ptr );
+   	return  v->ptr;
+}
+
 /* The End */
 
 

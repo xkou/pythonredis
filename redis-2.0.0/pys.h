@@ -12,6 +12,7 @@ char * _pyo_encode( PyObject*, PyObject*, int * );
 PyObject *_pyo_decode( char *, PyObject * );
  PyObject *pyo_set_object( PyObject *, PyObject * );
  int pysave();
+ PyObject *pyget( char *, int );
 #endif
 
 
