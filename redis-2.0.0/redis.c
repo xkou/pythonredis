@@ -11068,9 +11068,37 @@ int pysave(){
 
 PyObject * pyget( char *key, int len ){
 	robj * v = lookupKeyRead( server.db, createStringObject( key, len ) );
+	if( v == NULL) Py_RETURN_NONE;
 	Py_XINCREF( v->ptr );
    	return  v->ptr;
 }
+
+int pycallCallback( struct aeEventLoop *ev, long long id, void * data ){
+	TimerSt * tst = ( TimerSt *) data;
+
+	int r = PyObject_Call( tst->fun, tst->args, tst->kw );	
+	if( r == 0 ){
+		PyErr_Print();
+	}
+	Py_XDECREF( tst->fun );
+	Py_XDECREF( tst->args );
+	if( tst->kw ) Py_XDECREF( tst->kw );
+	zfree( tst );
+	return AE_NOMORE;
+}
+
+void pycallLater( double t, PyObject * function, PyObject* args, PyObject *kw ){
+	TimerSt *tst = zmalloc( sizeof( TimerSt ) );
+	tst->fun = function;
+	tst->args = args;
+	tst->kw = kw;	
+	Py_XINCREF( tst->fun );
+	Py_XINCREF( tst->args );
+	if( tst->kw)Py_XINCREF( tst->kw );
+		long long tt = t * 1000LL;
+	aeCreateTimeEvent( server.el, tt , pycallCallback, tst, NULL );
+}
+
 
 /* The End */
 
