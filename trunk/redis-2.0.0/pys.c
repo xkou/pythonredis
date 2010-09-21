@@ -626,6 +626,19 @@ PyObject* pyo_get( PyObject *self, PyObject *args){
 	return pyget( key, len );
 }
 
+PyObject * pyo_calllater( PyObject *self, PyObject *args, PyObject *kw ){
+	double t = PyFloat_AsDouble( PyTuple_GET_ITEM( args, 0 ) );
+	PyObject * fun = PyTuple_GET_ITEM( args, 1 );
+	PyObject * as = PyTuple_New( PyTuple_Size( args ) -2 );
+	for( int i = 2; i < PyTuple_Size( args ); i++){
+		PyObject * o = PyTuple_GET_ITEM( args, i );
+		Py_XINCREF( o );
+		PyTuple_SET_ITEM( as, i -2, o );
+	}
+	pycallLater( t, fun, as, kw );
+	Py_RETURN_NONE;
+}
+
 static PyMethodDef pyMds[] = {
 	{ "def_enc", pyo_def_enc, METH_VARARGS, "define encode rule"},
 	{ "enc", pyo_encode, METH_VARARGS, "encode object"},
@@ -634,6 +647,7 @@ static PyMethodDef pyMds[] = {
 	{ "set", pyo_set_object2, METH_VARARGS, "set key"},
 	{ "save", pyo_save, METH_VARARGS, "save"},
 	{ "get",pyo_get, METH_VARARGS, "get"},
+	{ "callLater", pyo_calllater, METH_KEYWORDS, "callLater" },
 	{ NULL, NULL, NULL, NULL }
 };
 int initPyVM(){

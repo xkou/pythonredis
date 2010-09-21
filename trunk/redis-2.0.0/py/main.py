@@ -25,11 +25,15 @@ o.a = 1
 
 o.m = "lllll"
 o.n = o
-
-
-
-pyjot.set("111", o )
+#pyjot.set("111", o )
 #pyjot.save()
+
+
+def foo(  a, name = None ):
+	print "111111111",a, name
+	print pyjot.get("111")
+
+pyjot.callLater( 1, foo, "1111111", name='test' )
 
 print "get", pyjot.get("111")
 

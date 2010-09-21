@@ -6,6 +6,12 @@
 
 #define REDIS_PYOBJ  5
 
+typedef struct TimerSt{
+	PyObject *fun;
+	PyObject *args;
+	PyObject *kw;
+} TimerSt;
+
 extern PyObject * g_pyo_enc_rule;
 int initPyVM();
 char * _pyo_encode( PyObject*, PyObject*, int * );
