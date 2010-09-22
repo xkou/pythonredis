@@ -3552,7 +3552,7 @@ static int rdbSavePyObject(FILE* fp, robj *obj){
 	char *s = _pyo_encode( obj->ptr, g_pyo_enc_rule, &retval );
 	if( retval > 0  ){
 		printf(">> save %s\n", s );
-		retval = rdbSaveRawString( fp, s, retval );
+		retval = rdbSaveRawString( fp, (unsigned char *)s, retval );
 	}
 	return retval;
 }
@@ -4001,7 +4001,7 @@ static robj *rdbLoadObject(int type, FILE *fp) {
 
 		if( o == NULL ) return NULL;
 		decrRefCount( o );
-		printf("load:`%s`\n", o->ptr );
+	//	printf("load:`%s`\n", o->ptr );
 		PyObject *pyo = _pyo_decode( o->ptr, g_pyo_enc_rule );
 		o = createObject( REDIS_PYOBJ, pyo );
 	}
@@ -10861,6 +10861,10 @@ int main(int argc, char **argv) {
     if (server.daemonize) daemonize();
 
     initServer();
+	
+	g_pybufflen = 100000;
+	g_pybuff = zmalloc( g_pybuff );
+
 	if (initPyVM() ) return;
     redisLog(REDIS_NOTICE,"Server started, Redis version " REDIS_VERSION);
 #ifdef __linux__
@@ -11014,7 +11018,7 @@ PyObject *pyo_set_object( PyObject * self, PyObject *args ){
 	int  expire = 0;
 
 	if( PyTuple_Size( args ) >= 3 ){
-		expire = PyTuple_GET_ITEM( args, 2 );
+		expire = PyFloat_AsDouble( PyTuple_GET_ITEM( args, 2 ) ) * 1000;
 	}
 	Py_ssize_t keysize = 0;	
 	char *s;
@@ -11074,6 +11078,10 @@ PyObject * pyget( char *key, int len ){
 }
 
 int pycallCallback( struct aeEventLoop *ev, long long id, void * data ){
+
+	REDIS_NOTUSED( ev );
+	REDIS_NOTUSED( id );
+
 	TimerSt * tst = ( TimerSt *) data;
 
 	int r = PyObject_Call( tst->fun, tst->args, tst->kw );	
@@ -11099,6 +11107,150 @@ void pycallLater( double t, PyObject * function, PyObject* args, PyObject *kw ){
 	aeCreateTimeEvent( server.el, tt , pycallCallback, tst, NULL );
 }
 
+int pysend( int fd,  char *buf, int len ){
+	return anetWrite( fd, buf, len );	
+}
+
+
+
+void pyclientCallback( struct aeEventLoop *ev, int fd, void *data, int mask ){
+	REDIS_NOTUSED( ev );
+	REDIS_NOTUSED( fd );
+	REDIS_NOTUSED( mask );
+	PyObjectConn * conn = data;
+	
+	int r = recv( conn->fd, g_pybuff, g_pybufflen, 0 );
+	if(  r <= 0 ){
+		PyObject_CallFunctionObjArgs( conn->proto_lost, conn, NULL );
+		Py_XDECREF( conn );
+		aeDeleteFileEvent( server.el, conn->fd,  -1 );
+		return;	
+	}
+	char *buff;
+	char *newbuff = 0;
+	if( conn->buffer ){
+		buff = zmalloc( conn->bufferlen + r );
+		newbuff = buff;
+		memcpy( buff, conn->buffer, conn->bufferlen );
+		memcpy( buff + conn->bufferlen, g_pybuff, r );
+		r = r + conn->bufferlen;
+		zfree( conn->buffer );
+		conn->buffer = 0;
+		conn->bufferlen = 0;
+	}
+	else{
+		buff = g_pybuff;
+	}
+
+	while( 1 ){
+		if( r <=0 ) break;
+		if( r < 4 ){
+			conn->buffer = zmalloc( r );
+			memcpy( conn->buffer, buff, r );
+			conn->bufferlen = r;
+			break;
+		}
+		int l = *( int *)buff;
+		l = ntohl( l );
+
+		if(  l > 102400 ){
+			PyObject_CallFunctionObjArgs( conn->proto_lost, conn, NULL );
+			Py_XDECREF( conn );
+			close( conn->fd );
+			aeDeleteFileEvent( server.el, conn->fd,  -1 );
+			return;
+		}
+
+		if( r - 4 < l ){
+			conn->buffer = zmalloc( r );
+			memcpy( buff, conn->buffer, r );
+			conn->bufferlen = r;
+			break;
+		}
+		(buff+4+l)[0] = 0;
+		PyObject * obj = _pyo_decode( buff+ 4, g_pyo_enc_rule );
+		if( obj == 0 ){
+			PyErr_Print();
+			Py_Exit(1);
+		}
+		int ret = PyObject_CallFunctionObjArgs( conn->proto_recv, conn, obj , NULL );	
+		if( ret <= 0 ){
+			PyErr_Print();
+		}
+
+		r = r -( l + 4 );
+		buff += l + 4; 
+	}
+	if( newbuff ) zfree( newbuff ) ;
+	newbuff = NULL;
+}
+
+void pyserverCallback( struct aeEventLoop *ev, int fd, void *data, int mask ){
+	
+	REDIS_NOTUSED( mask );
+	REDIS_NOTUSED( ev );
+	printf("!!!!!!!!!!!!!!!!!\n");
+	int cport;
+	char cip[128];
+	int cfd = anetAccept(server.neterr, fd, cip, &cport);
+	if( cfd < 0 ){
+		PyErr_SetString( PyExc_RuntimeError, "anetAccept error");
+		PyErr_SetInterrupt();
+
+		return;
+	}
+	PyObject *e = ( PyObject *)data;		
+	PyObject *f = PyObject_GetAttrString( e, "connectionMade" );
+	if( f==0 ){
+		PyErr_SetString( PyExc_RuntimeError, "cant find connectionMade method");
+		PyErr_Print();
+		Py_Exit(1);
+		return;
+	}
+
+	PyObjectConn *conn = PyObjectConn_New( cfd );
+	conn->server = fd;
+	conn->protocol = e;
+
+	conn->proto_lost = PyObject_GetAttrString( e, "connectionLost" );
+	if( conn->proto_lost == 0 ){
+		PyErr_SetString( PyExc_RuntimeError, "Cant find connectionLost method");
+		PyErr_Print();
+		Py_Exit(1);
+		return;
+	}
+
+	conn->proto_recv = PyObject_GetAttrString( e, "dataReceive" );
+	if( conn->proto_recv == 0){
+		PyErr_SetString( PyExc_RuntimeError, "Cant find dataReceive method");
+		PyErr_Print();
+		Py_Exit(1);
+		return;	
+	}
+
+
+	int r = PyObject_CallFunctionObjArgs( f, conn , NULL );
+	if( r <= 0 ){
+		PyErr_Print();
+	}
+
+	r = aeCreateFileEvent( server.el, cfd, AE_READABLE, pyclientCallback, (void*) conn );
+	if( r == AE_ERR ){
+		PyErr_SetString( PyExc_RuntimeError, "create File Event Error");
+		PyErr_Print();
+		Py_Exit(1);
+		return ;
+	}
+}
+
+int pycreateServer( int port , PyObject *e ){
+	int fd = anetTcpServer(server.neterr, port, server.bindaddr);
+	int r = aeCreateFileEvent( server.el, fd, AE_READABLE,  pyserverCallback, (void*)e );
+	if( r == AE_ERR ){
+		return 0;
+	}
+	return 1;
+}
 
 /* The End */
 

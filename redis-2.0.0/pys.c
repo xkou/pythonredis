@@ -1,5 +1,7 @@
 #include <stdlib.h>
+
 #include "pys.h"
+#include <structmember.h>
 #include "redis.h"
 
 char *g_pyenstr = NULL;
@@ -30,7 +32,6 @@ static char * pyenstrnew( ){
 	g_pyenstrlen += 1024;	
 	return g_pyenstr;
 }
-
 static void pyo_init(){
 	
 	g_pyenstrlen = 10240;
@@ -103,7 +104,8 @@ static PyObject* pyo_def_enc( PyObject* self, PyObject* args ){
 		while( 1 ){
 			PyObject* bases = PyObject_GetAttrString( pcls, "__bases__" );
 			if( bases == NULL ) return NULL;
-			PyTuple_GET_SIZE(bases ) && (pcls = PyTuple_GET_ITEM( bases, 0 ));
+			if( PyTuple_GET_SIZE(bases ) == 0 ) break;
+			pcls = PyTuple_GET_ITEM( bases, 0 );
 			if( pcls ){
 				PyObject *pv = PyDict_GetItem( dict, pcls );
 				if( pv ){
@@ -189,7 +191,19 @@ int pyo_inter_encode( PyObject* pyo, char *cpt, int offset, PyObject* rule  ){
 	}
 	else if( PyLong_CheckExact( pyo ) ){
 		if( g_pyenstrlen - offset < 1024 ) pyenstrnew();
-		l = sprintf( cpt, "%lld", PyLong_AsLongLong( pyo ) );
+		PY_LONG_LONG value = PyLong_AsLongLong( pyo );
+		char buf[32], *p;
+		unsigned long long v;
+		v = ( value < 0 ) ? -value : value;
+		p = buf + 31;
+		do {
+			*p-- = '0'+(v%10);
+			v /= 10;
+		} while(v);
+		if (value < 0) *p-- = '-';
+		p++;
+		l = 32-(p-buf);
+		memcpy( cpt, p, l ); 
 	}
 	else if( PyFloat_CheckExact( pyo ) ){
 		if( g_pyenstrlen - offset < 1024 ) pyenstrnew();
@@ -199,7 +213,8 @@ int pyo_inter_encode( PyObject* pyo, char *cpt, int offset, PyObject* rule  ){
 			strcpy( cpt, "NaN" );
 		}
 		else {
-			l = sprintf( g_pyenstr + offset,"%f", db );
+//	PyFloat_AsString( g_pyenstr + offset, pyo );
+			l = sprintf(g_pyenstr+ offset, "%f", db );
 		}
 	}
 	else if( PyList_CheckExact( pyo ) ){
@@ -212,8 +227,9 @@ int pyo_inter_encode( PyObject* pyo, char *cpt, int offset, PyObject* rule  ){
 		}
 		int r = pyo_handle_enc_ref( pyo, ref, l + offset,  &offset );
 		if( r ) return r;
+		PyObject *it = PyObject_GetIter( pyo );
 		for( int i=0; i < ss; i++){
-			PyObject* o = PyList_GET_ITEM( pyo, i );
+			PyObject* o = PyIter_Next( it );
 			int l2 = pyo_inter_encode( o, cpt+l,offset + l , rule );
 			if( l2 == 0 ) return 0;
 			l = l + l2;
@@ -241,8 +257,8 @@ int pyo_inter_encode( PyObject* pyo, char *cpt, int offset, PyObject* rule  ){
 			}
 
 			char *buff; Py_ssize_t ss;
-			int r = PyString_AsStringAndSize( k, &buff, &ss );
-			if( r == -1) return 0;
+			buff = PyString_AS_STRING( k );
+			ss = PyString_GET_SIZE( k );
 			strncpy( cpt + l, buff, ss );
 			l += ss;
 			(cpt +l)[0] = SEP2;
@@ -261,13 +277,12 @@ int pyo_inter_encode( PyObject* pyo, char *cpt, int offset, PyObject* rule  ){
 		char *buff;
 		l = 0;
 		Py_ssize_t ss;
-		if( -1 == PyString_AsStringAndSize( pyo, &buff, &ss ) ){
-			return 0;
-		}
+		buff = PyString_AS_STRING( pyo );
+		ss = PyString_GET_SIZE( pyo );
 		if( offset + 1024 > g_pyenstrlen ) pyenstrnew();
 		(cpt+l)[0] = SEP2;
 		++l;
-		strncpy( cpt + l, buff, ss );
+		memcpy( cpt + l, buff, ss );
 		l += ss;
 	}
 	else{
@@ -291,7 +306,10 @@ int pyo_inter_encode( PyObject* pyo, char *cpt, int offset, PyObject* rule  ){
 				return NULL;
 			}
 			
-			l = sprintf( cpt, "{" SEP "%s" SEP, def->fakename );
+			memcpy( cpt , "{" SEP , 2 ); l+=2;
+			int fl = strlen( def->fakename );
+			memcpy( cpt +l, def->fakename, fl ); l+=fl;
+			*(cpt + l) = SEP2; l +=1;
 		}
 		int r = pyo_handle_enc_ref( pyo, ref, l + offset, &offset );
 		if( r ) return r;
@@ -639,6 +657,89 @@ PyObject * pyo_calllater( PyObject *self, PyObject *args, PyObject *kw ){
 	Py_RETURN_NONE;
 }
 
+PyObject * pyo_server( PyObject *self, PyObject *args ){
+	int port = PyInt_AsLong( PyTuple_GET_ITEM( args , 0 ) );
+	PyObject *proto = PyTuple_GET_ITEM( args, 1 );
+	Py_XINCREF( proto );
+	int r = pycreateServer( port, proto );
+	if( r < 1 ){
+		PyErr_SetString( PyExc_RuntimeError, "create server error" );
+		return 0;
+	}
+	Py_RETURN_NONE;
+}
+
+
+static void pyconn_dealloc( PyObjectConn * self ){
+	close(self->fd);
+	PyObject_DEL( self );
+}
+
+static PyObject* pyconn_send( PyObjectConn *self, PyObject * args ){
+	PyObject *o = PyTuple_GET_ITEM( args, 0 );
+	int len ;
+	char * buf = _pyo_encode( o, g_pyo_enc_rule, &len );
+	if( len == 0) {
+		return 0;
+	}
+	int r = pysend( self->fd, buf, len );
+	return r;
+}
+
+static PyMethodDef pyconn_methods[] = {
+	{"send",(PyCFunction)pyconn_send,	METH_VARARGS, NULL },
+	{NULL, NULL, NULL, NULL} ,
+};
+
+static PyMemberDef pyconn_memberlist[] = {
+       {"fd", T_INT, offsetof(PyObjectConn, fd), READONLY, "the socket fd"},
+       {NULL, NULL, NULL, NULL},
+};
+
+static PyTypeObject PyConn_Type = {
+	PyVarObject_HEAD_INIT(&PyType_Type, 0)	/* Must fill in type value late */
+	"redis.conn",			/* tp_name */
+	sizeof(PyObjectConn),		/* tp_basicsize */
+	0,					/* tp_itemsize */
+	(destructor)pyconn_dealloc,		/* tp_dealloc */
+	0,					/* tp_print */
+	0,					/* tp_getattr */
+	0,					/* tp_setattr */
+	0,					/* tp_compare */
+	0,					/* tp_repr */
+	0,					/* tp_as_number */
+	0,					/* tp_as_sequence */
+	0,					/* tp_as_mapping */
+	0,					/* tp_hash */
+	0,					/* tp_call */
+	0,					/* tp_str */
+	PyObject_GenericGetAttr,		/* tp_getattro */
+	PyObject_GenericSetAttr,					/* tp_setattro */
+	0,					/* tp_as_buffer */
+	Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE, /* tp_flags */
+	0,				/* tp_doc */
+	0,					/* tp_traverse */
+	0,					/* tp_clear */
+	0,					/* tp_richcompare */
+	0,					/* tp_weaklistoffset */
+	0,					/* tp_iter */
+	0,					/* tp_iternext */
+	pyconn_methods,				/* tp_methods */
+	pyconn_memberlist,			/* tp_members */
+};
+
+PyObject * PyObjectConn_New( int fd ){
+	PyObjectConn * self;
+	self = PyObject_NEW( PyObjectConn, &PyConn_Type);
+	if( self == NULL ) return NULL;
+	self->fd = fd;
+	self->server = 0;
+	self->protocol = 0;
+	self->buffer = 0;
+	self->bufferlen = 0;
+	return self;
+}
+
 static PyMethodDef pyMds[] = {
 	{ "def_enc", pyo_def_enc, METH_VARARGS, "define encode rule"},
 	{ "enc", pyo_encode, METH_VARARGS, "encode object"},
@@ -648,6 +749,7 @@ static PyMethodDef pyMds[] = {
 	{ "save", pyo_save, METH_VARARGS, "save"},
 	{ "get",pyo_get, METH_VARARGS, "get"},
 	{ "callLater", pyo_calllater, METH_KEYWORDS, "callLater" },
+	{ "server", pyo_server, METH_KEYWORDS, "create server" },
 	{ NULL, NULL, NULL, NULL }
 };
 int initPyVM(){
@@ -655,6 +757,8 @@ int initPyVM(){
 	pyo_init();
 	PyObject *m = Py_InitModule("pyjot", pyMds);
 	assert( m!= NULL );
+
+	Py_TYPE(&PyConn_Type) = &PyType_Type;
 
 	FILE * F = fopen( "py/main.py","r" );
 	if( F == NULL ){
