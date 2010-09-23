@@ -1438,7 +1438,7 @@ static int serverCron(struct aeEventLoop *eventLoop, long long id, void *clientD
         size = dictSlots(server.db[j].dict);
         used = dictSize(server.db[j].dict);
         vkeys = dictSize(server.db[j].expires);
-        if (!(loops % 50) && (used || vkeys)) {
+        if (!(loops % 500) && (used || vkeys)) {
             redisLog(REDIS_VERBOSE,"DB %d: %lld keys (%lld volatile) in %lld slots HT.",j,used,vkeys,size);
             /* dictPrintStats(server.dict); */
         }
@@ -1464,8 +1464,9 @@ static int serverCron(struct aeEventLoop *eventLoop, long long id, void *clientD
     }
 
     /* Close connections of timedout clients */
-    if ((server.maxidletime && !(loops % 100)) || server.blpop_blocked_clients)
-        closeTimedoutClients();
+    if ((server.maxidletime && !(loops % 100)) || server.blpop_blocked_clients){
+      //  closeTimedoutClients();
+	}
 
     /* Check if a background saving or AOF rewrite in progress terminated */
     if (server.bgsavechildpid != -1 || server.bgrewritechildpid != -1) {
@@ -1740,7 +1741,7 @@ static void initServer() {
     createSharedObjects();
     server.el = aeCreateEventLoop();
     server.db = zmalloc(sizeof(redisDb)*server.dbnum);
-    server.fd = anetTcpServer(server.neterr, server.port, server.bindaddr);
+    server.fd = 0;// anetTcpServer(server.neterr, server.port, server.bindaddr);
     if (server.fd == -1) {
         redisLog(REDIS_WARNING, "Opening TCP port: %s", server.neterr);
         exit(1);
@@ -1770,8 +1771,8 @@ static void initServer() {
     server.stat_starttime = time(NULL);
     server.unixtime = time(NULL);
     aeCreateTimeEvent(server.el, 1, serverCron, NULL, NULL);
-    if (aeCreateFileEvent(server.el, server.fd, AE_READABLE,
-        acceptHandler, NULL) == AE_ERR) oom("creating file event");
+ //   if (aeCreateFileEvent(server.el, server.fd, AE_READABLE,
+ //       acceptHandler, NULL) == AE_ERR) oom("creating file event");
 
     if (server.appendonly) {
         server.appendfd = open(server.appendfilename,O_WRONLY|O_APPEND|O_CREAT,0644);
@@ -10863,7 +10864,7 @@ int main(int argc, char **argv) {
     initServer();
 	
 	g_pybufflen = 100000;
-	g_pybuff = zmalloc( g_pybuff );
+	g_pybuff = zmalloc( g_pybufflen );
 
 	if (initPyVM() ) return;
     redisLog(REDIS_NOTICE,"Server started, Redis version " REDIS_VERSION);
@@ -11111,8 +11112,6 @@ int pysend( int fd,  char *buf, int len ){
 	return anetWrite( fd, buf, len );	
 }
 
-
-
 void pyclientCallback( struct aeEventLoop *ev, int fd, void *data, int mask ){
 	REDIS_NOTUSED( ev );
 	REDIS_NOTUSED( fd );
@@ -11120,8 +11119,10 @@ void pyclientCallback( struct aeEventLoop *ev, int fd, void *data, int mask ){
 	PyObjectConn * conn = data;
 	
 	int r = recv( conn->fd, g_pybuff, g_pybufflen, 0 );
+	int totallen = r;
+//	printf("!!!!!! %d %p\n", r, g_pybuff );
 	if(  r <= 0 ){
-		PyObject_CallFunctionObjArgs( conn->proto_lost, conn, NULL );
+		PyObject_CallFunctionObjArgs( conn->proto_lost, conn, PyInt_FromLong( errno ), NULL );
 		Py_XDECREF( conn );
 		aeDeleteFileEvent( server.el, conn->fd,  -1 );
 		return;	
@@ -11150,20 +11151,19 @@ void pyclientCallback( struct aeEventLoop *ev, int fd, void *data, int mask ){
 			conn->bufferlen = r;
 			break;
 		}
-		int l = *( int *)buff;
+		unsigned long l = *( unsigned long *)buff;
 		l = ntohl( l );
 
-		if(  l > 102400 ){
-			PyObject_CallFunctionObjArgs( conn->proto_lost, conn, NULL );
+		if(  l >= g_pybufflen ){
+			PyObject_CallFunctionObjArgs( conn->proto_lost, conn,  PyString_FromString("too long"), NULL );
 			Py_XDECREF( conn );
-			close( conn->fd );
 			aeDeleteFileEvent( server.el, conn->fd,  -1 );
 			return;
 		}
 
 		if( r - 4 < l ){
 			conn->buffer = zmalloc( r );
-			memcpy( buff, conn->buffer, r );
+			memcpy( conn->buffer, buff, r );
 			conn->bufferlen = r;
 			break;
 		}
@@ -11177,26 +11177,28 @@ void pyclientCallback( struct aeEventLoop *ev, int fd, void *data, int mask ){
 		if( ret <= 0 ){
 			PyErr_Print();
 		}
-
+		Py_XDECREF( obj );
 		r = r -( l + 4 );
 		buff += l + 4; 
 	}
 	if( newbuff ) zfree( newbuff ) ;
 	newbuff = NULL;
+	if( totallen == g_pybufflen ){
+		return pyclientCallback( ev, fd, conn, 0 );
+	}
 }
 
 void pyserverCallback( struct aeEventLoop *ev, int fd, void *data, int mask ){
 	
 	REDIS_NOTUSED( mask );
 	REDIS_NOTUSED( ev );
-	printf("!!!!!!!!!!!!!!!!!\n");
 	int cport;
 	char cip[128];
 	int cfd = anetAccept(server.neterr, fd, cip, &cport);
 	if( cfd < 0 ){
 		PyErr_SetString( PyExc_RuntimeError, "anetAccept error");
 		PyErr_SetInterrupt();
-
+		Py_Exit(1);
 		return;
 	}
 	PyObject *e = ( PyObject *)data;		

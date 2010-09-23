@@ -1,8 +1,13 @@
 #include <stdlib.h>
 
+#define _GNU_SOURCE
 #include "pys.h"
 #include <structmember.h>
-#include "redis.h"
+#include <string.h>
+#include <arpa/inet.h>
+#include "zmalloc.h"
+
+char *strdup( char *);
 
 char *g_pyenstr = NULL;
 int g_pyenstrlen = 0;
@@ -24,20 +29,20 @@ PyObject * g_enc_refs;
 PyObject * g_dec_refs;
 
 static char * pyenstrnew( ){
-		
-	char* s = PyMem_Malloc( g_pyenstrlen + 1024 + 4 );
+//	printf(">>> strnew\n" );	
+	char* s = PyMem_Malloc( g_pyenstrlen + 10240 + 4 );
+//	printf(">>> s %d  %d\n", s, g_pyenstr );
 	memcpy( s+4, g_pyenstr, g_pyenstrlen );
 	PyMem_Free( g_pyenstr-4 );
-	g_pyenstr = s;
-	g_pyenstrlen += 1024;	
+	g_pyenstr = s + 4;
+	g_pyenstrlen += 10240;	
 	return g_pyenstr;
 }
 static void pyo_init(){
 	
-	g_pyenstrlen = 10240;
-	g_pyenstr = PyMem_Malloc( g_pyenstrlen );
+	g_pyenstrlen = 102400;
+	g_pyenstr = PyMem_Malloc( g_pyenstrlen + 4 );
 	g_pyenstr = g_pyenstr + 4;
-	g_pyenstrlen -= 4;
 
 	g_enc_refs = PyDict_New();
 	g_dec_refs = PyDict_New();
@@ -45,6 +50,8 @@ static void pyo_init(){
 }
 
 static PyObject* pyo_def_enc( PyObject* self, PyObject* args ){
+	PY_N( self );
+
 	PyObject* rule;
 	PyObject* cls;
 	PyObject* atts = NULL;
@@ -141,7 +148,7 @@ int pyo_handle_enc_ref( PyObject* pyo, PyObject* ref,  int pos, int * offset ){
 		info->no = 0;
 		info->pos = pos;
 		ref = PyCObject_FromVoidPtr( info , NULL );
-		PyDict_SetItem( g_enc_refs, PyInt_FromLong( pyo ), ref );
+		PyDict_SetItem( g_enc_refs, PyInt_FromLong( (unsigned long)pyo ), ref );
 	}
 	else{
 		 // printf("handle enc ref\n");
@@ -157,7 +164,6 @@ int pyo_handle_enc_ref( PyObject* pyo, PyObject* ref,  int pos, int * offset ){
 				Cls_Ref_Info *_info = PyCObject_AsVoidPtr( v );
 				if( _info->pos > info->pos ) _info->pos += ml;
 			}
-			if( *offset + ml > g_pyenstrlen ) pyenstrnew();
 //			printf("memmove %d, %d , %d\n", info->pos + ml, info->pos, *offset - info->pos );
 //			printf("memmove str %s\n", g_pyenstr + info->pos );
 
@@ -176,23 +182,22 @@ int pyo_handle_enc_ref( PyObject* pyo, PyObject* ref,  int pos, int * offset ){
 
 int pyo_inter_encode( PyObject* pyo, char *cpt, int offset, PyObject* rule  ){
 	int l = 1;
-	static char constr[1024];
+	if( g_pyenstrlen - offset < 10240 ) pyenstrnew();
+	cpt = g_pyenstr + offset;
 	if( pyo == Py_None ) *cpt = ',';
 	else if( Py_True  == pyo ) *cpt = '>';
 	else if( Py_False == pyo ) *cpt = '<';
 	else if( PyInt_Check( pyo ) ){
-		if( g_pyenstrlen - offset < 1024 ) pyenstrnew();
 //		int v = PyInt_AS_LONG( pyo );
 //		l = snprintf( cpt, 1000, "%ld", v );
 		PyObject * o = PyObject_Str( pyo );
-		char *s; int ssize;
-		PyString_AsStringAndSize( o, &s, &ssize );
-		l = ssize;
-		memcpy( cpt, s, l );
-		Py_XDECREF( o );
+		char *s;
+		s = PyString_AS_STRING( o );
+		l = PyString_GET_SIZE( o );
+		memcpy( g_pyenstr + offset , s, l );
+		Py_DECREF( o );
 	}
 	else if( PyLong_CheckExact( pyo ) ){
-		if( g_pyenstrlen - offset < 1024 ) pyenstrnew();
 		PY_LONG_LONG value = PyLong_AsLongLong( pyo );
 		char buf[32], *p;
 		unsigned long long v;
@@ -205,14 +210,13 @@ int pyo_inter_encode( PyObject* pyo, char *cpt, int offset, PyObject* rule  ){
 		if (value < 0) *p-- = '-';
 		p++;
 		l = 32-(p-buf);
-		memcpy( cpt, p, l ); 
+		memcpy( g_pyenstr + offset, p, l ); 
 	}
 	else if( PyFloat_CheckExact( pyo ) ){
-		if( g_pyenstrlen - offset < 1024 ) pyenstrnew();
 		double db = PyFloat_AS_DOUBLE( pyo );
 		if( db != db ) {
 			l = 3;
-			strcpy( cpt, "NaN" );
+			strcpy( g_pyenstr+ offset, "NaN" );
 		}
 		else {
 //	PyFloat_AsString( g_pyenstr + offset, pyo );
@@ -221,33 +225,34 @@ int pyo_inter_encode( PyObject* pyo, char *cpt, int offset, PyObject* rule  ){
 	}
 	else if( PyList_CheckExact( pyo ) ){
 		l = 0;
-		PyObject *ref = PyDict_GetItem(g_enc_refs, PyInt_FromLong(pyo) );
+		PyObject *lk = PyInt_FromLong( (long)pyo );
+		PyObject *ref = PyDict_GetItem(g_enc_refs, lk );
+		Py_CLEAR( lk );
 		int ss = PyList_Size( pyo );
-		if( offset + 1024 > g_pyenstrlen ) pyenstrnew();
 		if ( ref == NULL ){
-			l = sprintf( cpt,  "[" SEP "%d" SEP, ss );
+			l = sprintf( g_pyenstr+offset,  "[" SEP "%d" SEP, ss );
 		}
 		int r = pyo_handle_enc_ref( pyo, ref, l + offset,  &offset );
 		if( r ) return r;
-		PyObject *it = PyObject_GetIter( pyo );
 		for( int i=0; i < ss; i++){
-			PyObject* o = PyIter_Next( it );
-			int l2 = pyo_inter_encode( o, cpt+l,offset + l , rule );
+			PyObject* o = PyList_GET_ITEM( pyo, i );
+			int l2 = pyo_inter_encode( o, g_pyenstr+ offset + l,offset + l , rule );
 			if( l2 == 0 ) return 0;
 			l = l + l2;
-			*(cpt+l) = SEP2;
+			*(g_pyenstr + offset +l) = SEP2;
 			++l;
 		}
-		*(cpt +l ) = ']';
+		*(g_pyenstr + offset +l ) = ']';
 		l++;
 
 	}
 	else if( PyDict_CheckExact( pyo )){
 		l = 0;
-		PyObject *ref = PyDict_GetItem( g_enc_refs, PyInt_FromLong( (long)pyo ) );
-		if( offset + 1024 > g_pyenstrlen ) pyenstrnew();
+		PyObject *lk = PyInt_FromLong( (long)pyo );
+		PyObject *ref = PyDict_GetItem( g_enc_refs, lk );
+		Py_DECREF( lk );
 		if( ref == NULL ){
-			strcpy( cpt, "{" SEP SEP );
+			strcpy( g_pyenstr+offset, "{" SEP SEP );
 			l+=3;
 		}
 		int r = pyo_handle_enc_ref( pyo, ref, l + offset, &offset );
@@ -256,24 +261,25 @@ int pyo_inter_encode( PyObject* pyo, char *cpt, int offset, PyObject* rule  ){
 		while( PyDict_Next( pyo, &pos, &k, &v )){
 			if(! PyString_CheckExact( k ) ){
 				k = PyObject_Str( k );
+				Py_DECREF(k);
 			}
 
 			char *buff; Py_ssize_t ss;
 			buff = PyString_AS_STRING( k );
 			ss = PyString_GET_SIZE( k );
-			strncpy( cpt + l, buff, ss );
+			strncpy( g_pyenstr + offset + l, buff, ss );
 			l += ss;
-			(cpt +l)[0] = SEP2;
+			(g_pyenstr + offset +l)[0] = SEP2;
 			++l;
-			int l2 = pyo_inter_encode( v, cpt+l, offset+l, rule );
+			int l2 = pyo_inter_encode( v, g_pyenstr + offset + l, offset+l, rule );
 			if( l2 == 0 ) return 0;
 			l = l+ l2;
-			*(cpt+l) = SEP2;
+			*(g_pyenstr+offset+l) = SEP2;
 			++l;
 			
 		}
-		strcpy( cpt +l, SEP "}" );
-		l+=3;
+		strcpy( g_pyenstr+offset +l, SEP "}" );
+		l+=2;
 	}
 	else if( PyString_CheckExact( pyo ) ){
 		char *buff;
@@ -281,17 +287,17 @@ int pyo_inter_encode( PyObject* pyo, char *cpt, int offset, PyObject* rule  ){
 		Py_ssize_t ss;
 		buff = PyString_AS_STRING( pyo );
 		ss = PyString_GET_SIZE( pyo );
-		if( offset + 1024 > g_pyenstrlen ) pyenstrnew();
-		(cpt+l)[0] = SEP2;
+		(g_pyenstr+offset+l)[0] = SEP2;
 		++l;
-		memcpy( cpt + l, buff, ss );
+		memcpy( g_pyenstr + offset + l, buff, ss );
 		l += ss;
 	}
 	else{
 		l = 0;
-		PyObject * ref = PyDict_GetItem( g_enc_refs, PyInt_FromLong( pyo ) );
+		PyObject *lk = PyInt_FromLong( (long) pyo );
+		PyObject * ref = PyDict_GetItem( g_enc_refs, lk );
+		Py_DECREF( lk );
 		Cls_Def * def = NULL;
-		if( offset + 1024 > g_pyenstrlen) pyenstrnew();
 		if( ref == NULL ){
 			PyObject *type = PyObject_GetAttrString( pyo, "__class__" );
 			PyObject *rdict = NULL;
@@ -305,13 +311,13 @@ int pyo_inter_encode( PyObject* pyo, char *cpt, int offset, PyObject* rule  ){
 			}
 			if(  def == NULL ) {
 				PyErr_Format( PyExc_Exception, "cant find rule for '%s'", PyString_AsString( PyObject_GetAttrString( type, "__name__" ) ) );
-				return NULL;
+				return 0;
 			}
 			
-			memcpy( cpt , "{" SEP , 2 ); l+=2;
+			memcpy( g_pyenstr + offset , "{" SEP , 2 ); l+=2;
 			int fl = strlen( def->fakename );
-			memcpy( cpt +l, def->fakename, fl ); l+=fl;
-			*(cpt + l) = SEP2; l +=1;
+			memcpy( g_pyenstr+ offset +l, def->fakename, fl ); l+=fl;
+			*(g_pyenstr + offset + l) = SEP2; l +=1;
 		}
 		int r = pyo_handle_enc_ref( pyo, ref, l + offset, &offset );
 		if( r ) return r;
@@ -323,20 +329,20 @@ int pyo_inter_encode( PyObject* pyo, char *cpt, int offset, PyObject* rule  ){
 				if( name == NULL ) break;
 				PyObject * v = PyDict_GetItemString( odict, name );
 				if( v ){
-					strcpy( cpt + l, name );
+					strcpy( g_pyenstr+offset + l, name );
 					l += strlen( name );
-					(cpt +l)[0] = SEP2;
+					(g_pyenstr + offset +l)[0] = SEP2;
 					l ++;
-					int l2 = pyo_inter_encode( v, cpt + l, offset + l, rule );
-					if( l2 == 0 ) return NULL;
+					int l2 = pyo_inter_encode( v, g_pyenstr + offset + l, offset + l, rule );
+					if( l2 == 0 ) return 0;
 					l += l2;
-					(cpt+l)[0] = SEP2;
+					(g_pyenstr+ offset + l)[0] = SEP2;
 					l++;
 				}
 				i ++;
 			}
 		}
-		strcpy( cpt + l, SEP "}" );
+		strcpy( g_pyenstr+ offset + l, SEP "}" );
 		l += 2;	
 	}
 
@@ -348,7 +354,7 @@ int pyo_handle_dec_ref( char *buff, PyObject * o ){
 	while (1){
 		char ch = buff[l];
 
-		if( ch > '0' && ch < '9' ){
+		if( ch >= '0' && ch <= '9' ){
 				
 		}else if( ch == SEP2 ){
 			buff[l] = 0;
@@ -403,7 +409,7 @@ PyObject* pyo_inter_decode( char * buff, int * len, PyObject *rule ){
 		char *start = buff + 2;
 		while(1){
 			
-			if( buff[l] > '0' && buff[l] < '9' ){
+			if( buff[l] >= '0' && buff[l] <= '9' ){
 				l++;
 				continue;
 			}
@@ -476,6 +482,7 @@ PyObject* pyo_inter_decode( char * buff, int * len, PyObject *rule ){
 				PyObject * v = pyo_inter_decode(  buff + l, &outlen, rule );
 				if( v == NULL ) return NULL;
 				PyDict_SetItemString( r, start, v );
+				Py_DECREF( v );
 				l += outlen;
 				l++;
 			}
@@ -546,6 +553,7 @@ PyObject* pyo_inter_decode( char * buff, int * len, PyObject *rule ){
 				PyObject * v = pyo_inter_decode(  buff + l, &outlen, rule );
 				if( v == NULL ) return NULL;
 				PyDict_SetItemString( d, start, v );
+				Py_DECREF( v );
 				l += outlen;
 				l++;
 			}
@@ -581,20 +589,20 @@ PyObject* _pyo_decode( char * buff, PyObject *rule ){
 	PyObject *k, *v;
 	Py_ssize_t pos = 0;
 	while( PyDict_Next( g_dec_refs, &pos, &k, &v ) ){
-	//	Py_XDECREF(k);
+		Py_XDECREF(k);
 	};
 	PyDict_Clear( g_dec_refs );
 	return r;
 }
 
 PyObject* pyo_decode( PyObject* self, PyObject * args ){
+	PY_N( self );
 	PyObject *buf = PyTuple_GET_ITEM( args, 0 );
 	PyObject *rule = PyTuple_GET_ITEM( args, 1 );
 	return _pyo_decode( PyString_AsString( buf ), rule );
 }
 
 char * _pyo_encode( PyObject* o, PyObject * rule, int *len ){
-	PyDict_Clear( g_enc_refs);
 	g_enc_count = 0 ;
 	int l = pyo_inter_encode( o, g_pyenstr, 0, rule );
 	// 清除 g_enc_refs 的内容
@@ -602,15 +610,18 @@ char * _pyo_encode( PyObject* o, PyObject * rule, int *len ){
 	Py_ssize_t pos = 0;
 	while( PyDict_Next( g_enc_refs, &pos, &k, &v )){
 		Cls_Ref_Info * _info = PyCObject_AsVoidPtr( v );
-		Py_XDECREF( k );
-		Py_XDECREF( v );
+		Py_DECREF( k );
+		Py_DECREF( v );
 		PyMem_Free( _info );
 	};
+	
+	PyDict_Clear( g_enc_refs);
 	*len = l;
 	return g_pyenstr;
 }
 
 PyObject* pyo_encode(PyObject* self, PyObject * args ){
+	PY_N( self );
 	
 	PyObject * rule = NULL;
 	PyObject * o = PyTuple_GET_ITEM( args, 0 );
@@ -622,6 +633,7 @@ PyObject* pyo_encode(PyObject* self, PyObject * args ){
 }
 
 PyObject * pyo_set_global_rule ( PyObject* self, PyObject* args ){
+	PY_N(self);
 	PyObject *o = PyTuple_GET_ITEM( args, 0 );
 	g_pyo_enc_rule = o;
 	Py_RETURN_NONE;
@@ -632,6 +644,10 @@ PyObject *pyo_set_object2( PyObject *self, PyObject *args ){
 }
 
 PyObject* pyo_save(PyObject *self, PyObject *args ){
+	PY_N(self);
+	PY_N(args);
+	PY_N( self );
+	
 	if( pysave() ){
 		Py_RETURN_NONE;
 	}
@@ -640,6 +656,8 @@ PyObject* pyo_save(PyObject *self, PyObject *args ){
 }
 
 PyObject* pyo_get( PyObject *self, PyObject *args){
+	PY_N( self );
+	
 	PyObject * k  = PyTuple_GET_ITEM( args, 0 );
 	char *key; Py_ssize_t len;
 	PyString_AsStringAndSize( k, &key, &len );
@@ -647,6 +665,7 @@ PyObject* pyo_get( PyObject *self, PyObject *args){
 }
 
 PyObject * pyo_calllater( PyObject *self, PyObject *args, PyObject *kw ){
+	PY_N(self);
 	double t = PyFloat_AsDouble( PyTuple_GET_ITEM( args, 0 ) );
 	PyObject * fun = PyTuple_GET_ITEM( args, 1 );
 	PyObject * as = PyTuple_New( PyTuple_Size( args ) -2 );
@@ -660,6 +679,7 @@ PyObject * pyo_calllater( PyObject *self, PyObject *args, PyObject *kw ){
 }
 
 PyObject * pyo_server( PyObject *self, PyObject *args ){
+	PY_N( self );
 	int port = PyInt_AsLong( PyTuple_GET_ITEM( args , 0 ) );
 	PyObject *proto = PyTuple_GET_ITEM( args, 1 );
 	Py_XINCREF( proto );
@@ -673,6 +693,7 @@ PyObject * pyo_server( PyObject *self, PyObject *args ){
 
 
 static void pyconn_dealloc( PyObjectConn * self ){
+	if( self->buffer ) zfree( self->buffer );
 	close(self->fd);
 	PyObject_DEL( self );
 }
@@ -682,22 +703,27 @@ static PyObject* pyconn_send( PyObjectConn *self, PyObject * args ){
 	int len ;
 	char * buf = _pyo_encode( o, g_pyo_enc_rule, &len );
 	if( len == 0) {
+		if( !PyErr_Occurred() ){
+			PyErr_SetString(PyExc_RuntimeError, "_pyo_encode error");
+		}
 		return 0;
 	}
 	long *pl = (long*) (buf-4);
 	*pl = htonl(len);
 	int r = pysend( self->fd, buf-4, len+4 );
-	return r;
+	if( r > 0 ) Py_RETURN_NONE; 
+	PyErr_SetFromErrno( PyExc_SystemError );
+	return 0;
 }
 
 static PyMethodDef pyconn_methods[] = {
 	{"send",(PyCFunction)pyconn_send,	METH_VARARGS, NULL },
-	{NULL, NULL, NULL, NULL} ,
+	{NULL, NULL, 0, NULL} ,
 };
 
 static PyMemberDef pyconn_memberlist[] = {
        {"fd", T_INT, offsetof(PyObjectConn, fd), READONLY, "the socket fd"},
-       {NULL, NULL, NULL, NULL},
+       {NULL, 0, 0, 0, NULL},
 };
 
 static PyTypeObject PyConn_Type = {
@@ -730,6 +756,7 @@ static PyTypeObject PyConn_Type = {
 	0,					/* tp_iternext */
 	pyconn_methods,				/* tp_methods */
 	pyconn_memberlist,			/* tp_members */
+	0
 };
 
 PyObject * PyObjectConn_New( int fd ){
@@ -741,7 +768,7 @@ PyObject * PyObjectConn_New( int fd ){
 	self->protocol = 0;
 	self->buffer = 0;
 	self->bufferlen = 0;
-	return self;
+	return (PyObject*)self;
 }
 
 static PyMethodDef pyMds[] = {

@@ -91,6 +91,7 @@ int anetSetSendBuffer(char *err, int fd, int buffsize)
         anetSetError(err, "setsockopt SO_SNDBUF: %s\n", strerror(errno));
         return ANET_ERR;
     }
+
     return ANET_OK;
 }
 
