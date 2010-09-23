@@ -25,9 +25,9 @@ PyObject * g_dec_refs;
 
 static char * pyenstrnew( ){
 		
-	char* s = PyMem_Malloc( g_pyenstrlen + 1024 );
-	memcpy( s, g_pyenstr, g_pyenstrlen );
-	PyMem_Free( g_pyenstr );
+	char* s = PyMem_Malloc( g_pyenstrlen + 1024 + 4 );
+	memcpy( s+4, g_pyenstr, g_pyenstrlen );
+	PyMem_Free( g_pyenstr-4 );
 	g_pyenstr = s;
 	g_pyenstrlen += 1024;	
 	return g_pyenstr;
@@ -36,6 +36,8 @@ static void pyo_init(){
 	
 	g_pyenstrlen = 10240;
 	g_pyenstr = PyMem_Malloc( g_pyenstrlen );
+	g_pyenstr = g_pyenstr + 4;
+	g_pyenstrlen -= 4;
 
 	g_enc_refs = PyDict_New();
 	g_dec_refs = PyDict_New();
@@ -682,7 +684,9 @@ static PyObject* pyconn_send( PyObjectConn *self, PyObject * args ){
 	if( len == 0) {
 		return 0;
 	}
-	int r = pysend( self->fd, buf, len );
+	long *pl = (long*) (buf-4);
+	*pl = htonl(len);
+	int r = pysend( self->fd, buf-4, len+4 );
 	return r;
 }
 
