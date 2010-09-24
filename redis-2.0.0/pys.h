@@ -23,6 +23,7 @@ typedef struct PyObjectConn{
 	PyObject * proto_recv;
 	char * buffer;
 	unsigned int bufferlen;
+	PyObject *dict;
 }PyObjectConn;
 
 static char *g_pybuff;
