@@ -19,12 +19,13 @@ class Re:pass
 
 class proto:
 	def connectionMade( self, conn ):
-		print self, "made", conn
+		print self, "made", conn, type( conn ), type(conn).__bases__
+
 	def connectionLost( self, conn, rea ):
 		print self, "lost",conn, rea
 	def dataReceive( self, conn, data ):
 		#print self, "data", conn, data
-		conn.send(data)
+		#conn.send(data)
 		#while 1: pyjot.enc( data, R )
 		pass
 

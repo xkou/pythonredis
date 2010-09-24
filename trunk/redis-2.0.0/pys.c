@@ -693,8 +693,13 @@ PyObject * pyo_server( PyObject *self, PyObject *args ){
 
 
 static void pyconn_dealloc( PyObjectConn * self ){
-	if( self->buffer ) zfree( self->buffer );
+	if( self->buffer ) {
+		printf("[- %p]", self->buffer );
+		zfree( self->buffer );
+	}
+	self->buffer = 0;
 	close(self->fd);
+	Py_DECREF(self->dict);
 	PyObject_DEL( self );
 }
 
@@ -746,7 +751,7 @@ static PyTypeObject PyConn_Type = {
 	PyObject_GenericGetAttr,		/* tp_getattro */
 	PyObject_GenericSetAttr,					/* tp_setattro */
 	0,					/* tp_as_buffer */
-	Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE, /* tp_flags */
+	Py_TPFLAGS_HAVE_CLASS | Py_TPFLAGS_HAVE_GC , /* tp_flags */
 	0,				/* tp_doc */
 	0,					/* tp_traverse */
 	0,					/* tp_clear */
@@ -756,7 +761,7 @@ static PyTypeObject PyConn_Type = {
 	0,					/* tp_iternext */
 	pyconn_methods,				/* tp_methods */
 	pyconn_memberlist,			/* tp_members */
-	0
+	NULL,
 };
 
 PyObject * PyObjectConn_New( int fd ){
@@ -768,6 +773,7 @@ PyObject * PyObjectConn_New( int fd ){
 	self->protocol = 0;
 	self->buffer = 0;
 	self->bufferlen = 0;
+	self->dict = PyDict_New();
 	return (PyObject*)self;
 }
 
@@ -790,6 +796,8 @@ int initPyVM(){
 	assert( m!= NULL );
 
 	Py_TYPE(&PyConn_Type) = &PyType_Type;
+	PyType_Ready( &PyConn_Type);
+	PyConn_Type.tp_dictoffset = offsetof(PyObjectConn, dict );
 
 	FILE * F = fopen( "py/main.py","r" );
 	if( F == NULL ){

@@ -11123,19 +11123,22 @@ void pyclientCallback( struct aeEventLoop *ev, int fd, void *data, int mask ){
 //	printf("!!!!!! %d %p\n", r, g_pybuff );
 	if(  r <= 0 ){
 		PyObject_CallFunctionObjArgs( conn->proto_lost, conn, PyInt_FromLong( errno ), NULL );
-		Py_XDECREF( conn );
 		aeDeleteFileEvent( server.el, conn->fd,  -1 );
+		Py_XDECREF( conn );
 		return;	
 	}
 	char *buff;
 	char *newbuff = 0;
 	if( conn->buffer ){
 		buff = zmalloc( conn->bufferlen + r );
+		printf("[+1 %p]", buff );
 		newbuff = buff;
 		memcpy( buff, conn->buffer, conn->bufferlen );
 		memcpy( buff + conn->bufferlen, g_pybuff, r );
 		r = r + conn->bufferlen;
+		printf("[-2 %p]", conn->buffer );
 		zfree( conn->buffer );
+		
 		conn->buffer = 0;
 		conn->bufferlen = 0;
 	}
@@ -11147,6 +11150,7 @@ void pyclientCallback( struct aeEventLoop *ev, int fd, void *data, int mask ){
 		if( r <=0 ) break;
 		if( r < 4 ){
 			conn->buffer = zmalloc( r );
+			printf("[+3 %p]",  conn->buffer );
 			memcpy( conn->buffer, buff, r );
 			conn->bufferlen = r;
 			break;
@@ -11156,13 +11160,14 @@ void pyclientCallback( struct aeEventLoop *ev, int fd, void *data, int mask ){
 
 		if(  l >= g_pybufflen ){
 			PyObject_CallFunctionObjArgs( conn->proto_lost, conn,  PyString_FromString("too long"), NULL );
-			Py_XDECREF( conn );
 			aeDeleteFileEvent( server.el, conn->fd,  -1 );
+			Py_XDECREF( conn );
 			return;
 		}
 
 		if( r - 4 < l ){
 			conn->buffer = zmalloc( r );
+			printf("[+4 %p]", conn->buffer );
 			memcpy( conn->buffer, buff, r );
 			conn->bufferlen = r;
 			break;
@@ -11181,8 +11186,11 @@ void pyclientCallback( struct aeEventLoop *ev, int fd, void *data, int mask ){
 		r = r -( l + 4 );
 		buff += l + 4; 
 	}
-	if( newbuff ) zfree( newbuff ) ;
-	newbuff = NULL;
+	if( newbuff ){
+		printf("[-5 %p]", newbuff );
+//		zfree( newbuff ) ;
+		newbuff = NULL;
+	}
 	if( totallen == g_pybufflen ){
 		return pyclientCallback( ev, fd, conn, 0 );
 	}
