@@ -5,7 +5,10 @@ import sys
 import time
 import os
 
-class A: pass
+class A(object): pass
+
+
+print A
 
 class R : pass
 pyjot.def_enc(R, A, ["m", "n"] );
@@ -25,7 +28,8 @@ class proto:
 		print self, "lost",conn, rea
 	def dataReceive( self, conn, data ):
 		#print self, "data", conn, data
-		#conn.send(data)
+#		conn.send( data )
+#		while 1: conn.send( data )	
 		#while 1: pyjot.enc( data, R )
 		pass
 

@@ -10864,7 +10864,7 @@ int main(int argc, char **argv) {
     initServer();
 	
 	g_pybufflen = 100000;
-	g_pybuff = zmalloc( g_pybufflen );
+	g_pybuff = zmalloc( g_pybufflen + 1 );
 
 	if (initPyVM() ) return;
     redisLog(REDIS_NOTICE,"Server started, Redis version " REDIS_VERSION);
@@ -11120,6 +11120,7 @@ void pyclientCallback( struct aeEventLoop *ev, int fd, void *data, int mask ){
 	
 	int r = recv( conn->fd, g_pybuff, g_pybufflen, 0 );
 	int totallen = r;
+
 //	printf("!!!!!! %d %p\n", r, g_pybuff );
 	if(  r <= 0 ){
 		PyObject_CallFunctionObjArgs( conn->proto_lost, conn, PyInt_FromLong( errno ), NULL );
@@ -11130,13 +11131,11 @@ void pyclientCallback( struct aeEventLoop *ev, int fd, void *data, int mask ){
 	char *buff;
 	char *newbuff = 0;
 	if( conn->buffer ){
-		buff = zmalloc( conn->bufferlen + r );
-		printf("[+1 %p]", buff );
+		buff = zmalloc( conn->bufferlen + r + 1 );
 		newbuff = buff;
 		memcpy( buff, conn->buffer, conn->bufferlen );
 		memcpy( buff + conn->bufferlen, g_pybuff, r );
 		r = r + conn->bufferlen;
-		printf("[-2 %p]", conn->buffer );
 		zfree( conn->buffer );
 		
 		conn->buffer = 0;
@@ -11150,7 +11149,6 @@ void pyclientCallback( struct aeEventLoop *ev, int fd, void *data, int mask ){
 		if( r <=0 ) break;
 		if( r < 4 ){
 			conn->buffer = zmalloc( r );
-			printf("[+3 %p]",  conn->buffer );
 			memcpy( conn->buffer, buff, r );
 			conn->bufferlen = r;
 			break;
@@ -11167,7 +11165,6 @@ void pyclientCallback( struct aeEventLoop *ev, int fd, void *data, int mask ){
 
 		if( r - 4 < l ){
 			conn->buffer = zmalloc( r );
-			printf("[+4 %p]", conn->buffer );
 			memcpy( conn->buffer, buff, r );
 			conn->bufferlen = r;
 			break;
@@ -11182,13 +11179,12 @@ void pyclientCallback( struct aeEventLoop *ev, int fd, void *data, int mask ){
 		if( ret <= 0 ){
 			PyErr_Print();
 		}
-		Py_XDECREF( obj );
+		Py_DECREF( obj );
 		r = r -( l + 4 );
 		buff += l + 4; 
 	}
 	if( newbuff ){
-		printf("[-5 %p]", newbuff );
-//		zfree( newbuff ) ;
+		zfree( newbuff ) ;
 		newbuff = NULL;
 	}
 	if( totallen == g_pybufflen ){
@@ -11221,7 +11217,7 @@ void pyserverCallback( struct aeEventLoop *ev, int fd, void *data, int mask ){
 	PyObjectConn *conn = PyObjectConn_New( cfd );
 	conn->server = fd;
 	conn->protocol = e;
-
+	conn->buffer = NULL;
 	conn->proto_lost = PyObject_GetAttrString( e, "connectionLost" );
 	if( conn->proto_lost == 0 ){
 		PyErr_SetString( PyExc_RuntimeError, "Cant find connectionLost method");
