@@ -11015,7 +11015,14 @@ static void setupSigSegvAction(void) {
 
 PyObject *pyo_set_object( PyObject * self, PyObject *args ){
 	PyObject *k = PyTuple_GET_ITEM( args, 0 );
+	if( k == NULL || PyString_CheckExact( k )==NULL ){
+		PyErr_BadArgument();
+		return NULL;
+	}
 	PyObject *v = PyTuple_GET_ITEM( args, 1 );
+	if( v == NULL ){
+		PyErr_BadArgument();
+	}
 	int  expire = 0;
 
 	if( PyTuple_Size( args ) >= 3 ){
@@ -11085,7 +11092,7 @@ int pycallCallback( struct aeEventLoop *ev, long long id, void * data ){
 
 	TimerSt * tst = ( TimerSt *) data;
 
-	int r = PyObject_Call( tst->fun, tst->args, tst->kw );	
+	PyObject* r = PyObject_Call( tst->fun, tst->args, tst->kw );	
 	if( r == 0 ){
 		PyErr_Print();
 	}
@@ -11112,6 +11119,11 @@ int pysend( int fd,  char *buf, int len ){
 	return anetWrite( fd, buf, len );	
 }
 
+int pyclose( int fd ){
+	aeDeleteFileEvent( server.el, fd, -1 );
+	return close( fd );
+}
+
 void pyclientCallback( struct aeEventLoop *ev, int fd, void *data, int mask ){
 	REDIS_NOTUSED( ev );
 	REDIS_NOTUSED( fd );
@@ -11124,7 +11136,6 @@ void pyclientCallback( struct aeEventLoop *ev, int fd, void *data, int mask ){
 //	printf("!!!!!! %d %p\n", r, g_pybuff );
 	if(  r <= 0 ){
 		PyObject_CallFunctionObjArgs( conn->proto_lost, conn, PyInt_FromLong( errno ), NULL );
-		aeDeleteFileEvent( server.el, conn->fd,  -1 );
 		Py_XDECREF( conn );
 		return;	
 	}
@@ -11158,7 +11169,6 @@ void pyclientCallback( struct aeEventLoop *ev, int fd, void *data, int mask ){
 
 		if(  l >= g_pybufflen ){
 			PyObject_CallFunctionObjArgs( conn->proto_lost, conn,  PyString_FromString("too long"), NULL );
-			aeDeleteFileEvent( server.el, conn->fd,  -1 );
 			Py_XDECREF( conn );
 			return;
 		}
@@ -11257,6 +11267,204 @@ int pycreateServer( int port , PyObject *e ){
 	}
 	return 1;
 }
+
+
+/* skiplist node */
+typedef struct PySLNodeObject{
+	PyObject_HEAD
+	zskiplistNode *node;
+} PySLNodeObject;
+
+static void slnode_dealloc(PySLNodeObject *self)
+{
+	PyObject_DEL(self);
+}
+
+PyTypeObject PySLNode_Type = {
+	PyObject_HEAD_INIT(&PyType_Type)
+	(long)"SLNode",
+	(void*)sizeof(PySLNodeObject),
+	0,
+	(long)slnode_dealloc, 		/* tp_dealloc */
+	0,					/* tp_print */
+	0,					/* tp_getattr */
+	0,					/* tp_setattr */
+	0,
+	0,			/* tp_repr */
+	0,					/* tp_as_number */
+	0,			/* tp_as_sequence */
+	0,			/* tp_as_mapping */
+	0,			/* tp_hash */
+	0,					/* tp_call */
+	0,			/* tp_str */
+	(getattrofunc)PyObject_GenericGetAttr,		/* tp_getattro */
+	0,					/* tp_setattro */
+	0,			/* tp_as_buffer */
+	Py_TPFLAGS_DEFAULT , /* tp_flags */
+	0,				/* tp_doc */
+	0,					/* tp_traverse */
+	0,					/* tp_clear */
+	0,					/* tp_richcompare */
+	0,					/* tp_weaklistoffset */
+	0,					/* tp_iter */
+	0,					/* tp_iternext */
+	0,					/* tp_methods */	
+	0,					/* tp_members */
+	0,					/* tp_getset */
+	0,					/* tp_base */
+	0,					/* tp_dict */
+	0,					/* tp_descr_get */
+	0,					/* tp_descr_set */
+	0,					/* tp_dictoffset */
+	0,					/* tp_init */
+	0,					/* tp_alloc */
+	0,					/* tp_new */
+};
+
+static PyObject *PySLNodeObject_New( zskiplistNode * node ){
+	PySLNodeObject * r =(PySLNodeObject*) PyType_GenericNew( &PySLNode_Type, NULL, NULL );
+	r->node = node;
+	return (PyObject*)r;
+}
+
+/* node end */
+/* skiplist object */
+typedef struct PySLObject{
+	PyObject_HEAD
+	zskiplist *list;	
+}PySLObject;
+
+static PyObject* pysl_init( PySLObject * self, PyObject *args, PyObject* kw ){
+	PY_N( self );
+	PY_N( args );
+	PY_N( kw );
+	self->list = zslCreate();
+	return 0;
+}
+
+static PyObject* pysl_dealloc( PySLObject * self, PyObject *args ){
+	PY_N( args );
+	zslFree( self->list );
+	Py_TYPE(self)->tp_free((PyObject *)self);
+}
+
+static PyObject* pysl_insert( PySLObject * self, PyObject *args ){
+	if( PyTuple_Size( args ) !=2  ){
+		PyErr_BadArgument( );
+		return NULL;
+	}
+	PY_N( self );
+	PyObject * sco = PyTuple_GET_ITEM( args, 0 );
+	double score;
+	sco = PyNumber_Float( sco );
+	if( sco == NULL ){
+		PyErr_BadArgument( );
+		return NULL;
+	}
+
+	PyObject *v = PyTuple_GET_ITEM( args, 1 );
+
+	score = PyFloat_AS_DOUBLE( sco );
+	Py_DECREF( sco );
+	
+	robj *obj = createObject( REDIS_PYOBJ, v );
+	zslInsert( self->list, score, obj );
+	decrRefCount( obj );
+	Py_RETURN_NONE;
+}
+
+static PyObject* pysl_delete ( PySLObject * self, PyObject *args ){
+	PY_N(self);
+	if( PyTuple_Size( args ) !=2  ){
+		PyErr_BadArgument( );
+		return NULL;
+	}
+	PyObject * sco = PyTuple_GET_ITEM( args, 0 );
+	double score;
+	sco = PyNumber_Float( sco );
+	if( sco == NULL ){
+		PyErr_BadArgument( );
+		return NULL;
+	}
+
+	score = PyFloat_AS_DOUBLE( sco );
+	Py_DECREF( sco );
+
+	PyObject *v = PyTuple_GET_ITEM( args, 1 );
+	robj* obj = createObject( REDIS_PYOBJ, v );
+	int r =zslDelete ( self->list, score, obj );
+	decrRefCount( obj );
+	if( r == 0 ){
+	
+	}
+	Py_RETURN_NONE;
+}
+
+static PyObject* pysl_score ( PySLObject * self, PyObject *args ){
+	PY_N( self );
+	if( PyTuple_Size( args ) !=1 ){
+		PyErr_BadArgument( );
+		return NULL;
+	}
+	PyObject * sco = PyTuple_GET_ITEM( args, 0 );
+	double score;
+	sco = PyNumber_Float( sco );
+	if( sco == NULL ){
+		PyErr_BadArgument( );
+		return NULL;
+	}
+
+	score = PyFloat_AS_DOUBLE( sco );
+	Py_DECREF( sco );
+
+	zskiplistNode *r = zslFirstWithScore( self->list, score );
+	if( r == NULL ){
+		Py_RETURN_NONE;
+	}
+	return PySLNodeObject_New( r );
+}
+
+
+PyTypeObject PySL_Type = {
+	PyObject_HEAD_INIT(&PyType_Type)
+	(long)"SkipList",
+	(void*)sizeof(PySLObject),
+	0,
+	(long)slnode_dealloc, 		/* tp_dealloc */
+	0,					/* tp_print */
+	0,					/* tp_getattr */
+	0,					/* tp_setattr */
+	0,
+	0,			/* tp_repr */
+	0,					/* tp_as_number */
+	0,			/* tp_as_sequence */
+	0,			/* tp_as_mapping */
+	0,			/* tp_hash */
+	0,					/* tp_call */
+	0,			/* tp_str */
+	(getattrofunc)PyObject_GenericGetAttr,		/* tp_getattro */
+	0,					/* tp_setattro */
+	0,			/* tp_as_buffer */
+	Py_TPFLAGS_DEFAULT , /* tp_flags */
+	0,				/* tp_doc */
+	0,					/* tp_traverse */
+	0,					/* tp_clear */
+	0,					/* tp_richcompare */
+	0,					/* tp_weaklistoffset */
+	0,					/* tp_iter */
+	0,					/* tp_iternext */
+	0,					/* tp_methods */	
+	0,					/* tp_members */
+	0,					/* tp_getset */
+	0,					/* tp_base */
+	0,					/* tp_dict */
+	0,					/* tp_descr_get */
+	0,					/* tp_descr_set */
+	0,					/* tp_dictoffset */
+	pysl_init,					/* tp_init */
+	PyType_GenericAlloc,		/* tp_alloc */
+	PyType_GenericNew,			/* tp_new */
+};
 
 /* The End */
 

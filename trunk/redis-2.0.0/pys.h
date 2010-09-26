@@ -26,8 +26,9 @@ typedef struct PyObjectConn{
 	PyObject *dict;
 }PyObjectConn;
 
+
 static char *g_pybuff;
-static int g_pybufflen;
+static unsigned long g_pybufflen;
 
 extern PyObject * g_pyo_enc_rule;
 int initPyVM();
@@ -36,6 +37,7 @@ PyObject *_pyo_decode( char *, PyObject * );
 PyObject *pyo_set_object( PyObject *, PyObject * );
 PyObject *PyObjectConn_New( int fd );
 int pysave();
+int pyclose( int );
 void pycallLater( double, PyObject*, PyObject*, PyObject*);
 int pycreateServer( int , PyObject*);
 int pysend( int fd,  char * buf, int len );
