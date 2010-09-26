@@ -549,6 +549,11 @@ typedef struct iojob {
     pthread_t thread; /* ID of the thread processing this entry */
 } iojob;
 
+
+
+
+
+
 /*================================ Prototypes =============================== */
 
 static void freeStringObject(robj *o);
@@ -742,6 +747,27 @@ static void unsubscribeCommand(redisClient *c);
 static void psubscribeCommand(redisClient *c);
 static void punsubscribeCommand(redisClient *c);
 static void publishCommand(redisClient *c);
+
+
+
+
+
+
+
+
+
+robj *createPyObject( PyObject* v ){
+//	printf("]]create py %p\n", (void*)v );
+	robj *r = createObject( REDIS_PYOBJ, v );
+	Py_INCREF( r->ptr );
+	r->encoding = REDIS_ENCODING_INT;
+	return r;
+}
+void freePyObject(robj *o) {
+   Py_DECREF( o->ptr );
+//  printf("]]free py %p\n", o->ptr );
+}
+
 
 /*================================= Globals ================================= */
 
@@ -1573,7 +1599,7 @@ static int serverCron(struct aeEventLoop *eventLoop, long long id, void *clientD
 static void beforeSleep(struct aeEventLoop *eventLoop) {
     REDIS_NOTUSED(eventLoop);
 
-    /* Awake clients that got all the swapped keys they requested */
+    /* Awake clients that got all the swapped keys they requested 
     if (server.vm_enabled && listLength(server.io_ready_clients)) {
         listIter li;
         listNode *ln;
@@ -1583,7 +1609,7 @@ static void beforeSleep(struct aeEventLoop *eventLoop) {
             redisClient *c = ln->value;
             struct redisCommand *cmd;
 
-            /* Resume the client. */
+           // * Resume the client. 
             listDelNode(server.io_ready_clients,ln);
             c->flags &= (~REDIS_IO_WAIT);
             server.vm_blocked_clients--;
@@ -1593,11 +1619,12 @@ static void beforeSleep(struct aeEventLoop *eventLoop) {
             assert(cmd != NULL);
             call(c,cmd);
             resetClient(c);
-            /* There may be more data to process in the input buffer. */
+            // There may be more data to process in the input buffer. 
             if (c->querybuf && sdslen(c->querybuf) > 0)
                 processInputBuffer(c);
         }
     }
+          */
     /* Write the AOF buffer on disk */
     flushAppendOnlyFile();
 }
@@ -3056,6 +3083,7 @@ static void decrRefCount(void *obj) {
         case REDIS_SET: freeSetObject(o); break;
         case REDIS_ZSET: freeZsetObject(o); break;
         case REDIS_HASH: freeHashObject(o); break;
+		case REDIS_PYOBJ:freePyObject(o); break;
         default: redisPanic("Unknown object type"); break;
         }
         if (server.vm_enabled) pthread_mutex_lock(&server.obj_freelist_mutex);
@@ -3236,6 +3264,7 @@ static robj *getDecodedObject(robj *o) {
  * sdscmp() from sds.c will apply memcmp() so this function ca be considered
  * binary safe. */
 static int compareStringObjects(robj *a, robj *b) {
+	if( a->type == REDIS_PYOBJ && b->type == REDIS_PYOBJ ) return (int)a->ptr - (int)b->ptr;
     redisAssert(a->type == REDIS_STRING && b->type == REDIS_STRING);
     char bufa[128], bufb[128], *astr, *bstr;
     int bothsds = 1;
@@ -3771,6 +3800,7 @@ static int rdbSave(char *filename) {
                 /* Remove the loaded object from memory */
                 decrRefCount(po);
             }
+			decrRefCount( o );
         }
         dictReleaseIterator(di);
     }
@@ -4004,7 +4034,7 @@ static robj *rdbLoadObject(int type, FILE *fp) {
 		decrRefCount( o );
 	//	printf("load:`%s`\n", o->ptr );
 		PyObject *pyo = _pyo_decode( o->ptr, g_pyo_enc_rule );
-		o = createObject( REDIS_PYOBJ, pyo );
+		o = createPyObject( pyo );
 	}
 	else if (type == REDIS_LIST || type == REDIS_SET) {
         /* Read list/set value */
@@ -4247,6 +4277,9 @@ static int prepareForShutdown() {
         }
     }
     redisLog(REDIS_WARNING,"Server exit now, bye bye...");
+
+	Py_Finalize();
+
     return REDIS_OK;
 }
 
@@ -5506,7 +5539,6 @@ static void zslFreeNode(zskiplistNode *node) {
 
 static void zslFree(zskiplist *zsl) {
     zskiplistNode *node = zsl->header->forward[0], *next;
-
     zfree(zsl->header->forward);
     zfree(zsl->header->span);
     zfree(zsl->header);
@@ -10866,7 +10898,7 @@ int main(int argc, char **argv) {
 	g_pybufflen = 100000;
 	g_pybuff = zmalloc( g_pybufflen + 1 );
 
-	if (initPyVM() ) return;
+	if (initPyVM() ) return 1;
     redisLog(REDIS_NOTICE,"Server started, Redis version " REDIS_VERSION);
 #ifdef __linux__
     linuxOvercommitMemoryWarning();
@@ -11013,9 +11045,12 @@ static void setupSigSegvAction(void) {
 #endif /* HAVE_BACKTRACE */
 
 
+
+
 PyObject *pyo_set_object( PyObject * self, PyObject *args ){
+	PY_N( self );
 	PyObject *k = PyTuple_GET_ITEM( args, 0 );
-	if( k == NULL || PyString_CheckExact( k )==NULL ){
+	if( k == NULL || PyString_CheckExact( k )== 0 ){
 		PyErr_BadArgument();
 		return NULL;
 	}
@@ -11033,7 +11068,7 @@ PyObject *pyo_set_object( PyObject * self, PyObject *args ){
    	PyString_AsStringAndSize( k, &s, &keysize );
 	robj* key = createStringObject( s, keysize );
 	Py_XINCREF( v );
-	robj* val = createObject( REDIS_PYOBJ, v );
+	robj* val = createPyObject( v );
 	redisDb* db = server.db;	
 	int retval = 0;
     long seconds = 0; /* initialized to avoid an harmness warning */
@@ -11049,13 +11084,13 @@ PyObject *pyo_set_object( PyObject * self, PyObject *args ){
             if (server.vm_enabled && deleteIfSwapped(db,key))
                 incrRefCount(key);
             dictReplace(db->dict,key,val);
-            incrRefCount(val);
+   //         incrRefCount(val);
         } else {
 			Py_RETURN_NONE;
 		}
     } else {
-        incrRefCount(key);
-        incrRefCount(val);
+ //       incrRefCount(key);
+  //      incrRefCount(val);
     }
     server.dirty++;
     removeExpire(db,key);
@@ -11130,8 +11165,8 @@ void pyclientCallback( struct aeEventLoop *ev, int fd, void *data, int mask ){
 	REDIS_NOTUSED( mask );
 	PyObjectConn * conn = data;
 	
-	int r = recv( conn->fd, g_pybuff, g_pybufflen, 0 );
-	int totallen = r;
+	unsigned long r = recv( conn->fd, g_pybuff, g_pybufflen, 0 );
+	unsigned long  totallen = r;
 
 //	printf("!!!!!! %d %p\n", r, g_pybuff );
 	if(  r <= 0 ){
@@ -11181,12 +11216,12 @@ void pyclientCallback( struct aeEventLoop *ev, int fd, void *data, int mask ){
 		}
 		(buff+4+l)[0] = 0;
 		PyObject * obj = _pyo_decode( buff+ 4, g_pyo_enc_rule );
-		if( obj == 0 ){
+		if( obj == NULL ){
 			PyErr_Print();
 			Py_Exit(1);
 		}
-		int ret = PyObject_CallFunctionObjArgs( conn->proto_recv, conn, obj , NULL );	
-		if( ret <= 0 ){
+		PyObject* ret = PyObject_CallFunctionObjArgs( conn->proto_recv, conn, obj , NULL );	
+		if( ret == 0 ){
 			PyErr_Print();
 		}
 		Py_DECREF( obj );
@@ -11198,7 +11233,8 @@ void pyclientCallback( struct aeEventLoop *ev, int fd, void *data, int mask ){
 		newbuff = NULL;
 	}
 	if( totallen == g_pybufflen ){
-		return pyclientCallback( ev, fd, conn, 0 );
+		pyclientCallback( ev, fd, conn, 0 );
+		return;
 	}
 }
 
@@ -11224,7 +11260,7 @@ void pyserverCallback( struct aeEventLoop *ev, int fd, void *data, int mask ){
 		return;
 	}
 
-	PyObjectConn *conn = PyObjectConn_New( cfd );
+	PyObjectConn *conn = (PyObjectConn*)PyObjectConn_New( cfd );
 	conn->server = fd;
 	conn->protocol = e;
 	conn->buffer = NULL;
@@ -11245,13 +11281,13 @@ void pyserverCallback( struct aeEventLoop *ev, int fd, void *data, int mask ){
 	}
 
 
-	int r = PyObject_CallFunctionObjArgs( f, conn , NULL );
-	if( r <= 0 ){
+	PyObject* r = PyObject_CallFunctionObjArgs( f, conn , NULL );
+	if( r == 0 ){
 		PyErr_Print();
 	}
 
-	r = aeCreateFileEvent( server.el, cfd, AE_READABLE, pyclientCallback, (void*) conn );
-	if( r == AE_ERR ){
+	int err =aeCreateFileEvent( server.el, cfd, AE_READABLE, pyclientCallback, (void*) conn );
+	if( err == AE_ERR ){
 		PyErr_SetString( PyExc_RuntimeError, "create File Event Error");
 		PyErr_Print();
 		Py_Exit(1);
@@ -11273,6 +11309,7 @@ int pycreateServer( int port , PyObject *e ){
 typedef struct PySLNodeObject{
 	PyObject_HEAD
 	zskiplistNode *node;
+	zskiplist *list;
 } PySLNodeObject;
 
 static void slnode_dealloc(PySLNodeObject *self)
@@ -11280,12 +11317,61 @@ static void slnode_dealloc(PySLNodeObject *self)
 	PyObject_DEL(self);
 }
 
+static PyObject *PySLNodeObject_New( zskiplistNode * node, zskiplist *list );
+
+
+static PyObject* slnode_iter ( PySLNodeObject * self, PyObject *args ){
+	PY_N( args );
+	return (PyObject*)PySLNodeObject_New( self->node, self->list );
+}
+
+PyObject *slnode_getRank(PySLNodeObject *self, void * p ){
+	PY_N( p );
+	Py_INCREF( self->node->obj->ptr );
+	return self->node->obj->ptr;
+}
+
+PyObject *slnode_getObj(PySLNodeObject *self, void * p ){
+	PY_N( p );
+	Py_INCREF( self->node->obj->ptr );
+	return self->node->obj->ptr;
+}
+
+PyObject *slnode_getScore(PySLNodeObject *self, void * p){
+	PY_N( p );
+	return PyFloat_FromDouble( self->node->score );
+}
+
+static PyObject* slnode_str ( PySLNodeObject * self, PyObject *args ){
+	PY_N( args );
+	static char ss[512];
+	sprintf( ss, "<SLNode score: %f, obj: %p>", self->node->score, self->node->obj->ptr );
+	return PyString_FromString( ss );
+}
+static PyObject* slnode_next ( PySLNodeObject * self, PyObject *args ){
+	PY_N( args );
+	zskiplistNode * node = self->node->forward[0];
+	self->node = node;
+	if( node ){
+		return PySLNodeObject_New( node, self->list );
+	}
+	PyErr_SetNone(PyExc_StopIteration);
+	return NULL;
+}
+
+static PyGetSetDef slnode_gsdefs[] = {
+	{"value", slnode_getObj, NULL, NULL, NULL},
+	{"score", slnode_getScore, NULL, NULL, NULL },
+	{"rank", slnode_getRank, NULL, NULL, NULL },
+	{ NULL, NULL, NULL, NULL, NULL }
+};
+
 PyTypeObject PySLNode_Type = {
-	PyObject_HEAD_INIT(&PyType_Type)
-	(long)"SLNode",
-	(void*)sizeof(PySLNodeObject),
+	PyVarObject_HEAD_INIT(&PyType_Type, 0)
+	"SLNode",
+	sizeof(PySLNodeObject),
 	0,
-	(long)slnode_dealloc, 		/* tp_dealloc */
+	(destructor)slnode_dealloc, 		/* tp_dealloc */
 	0,					/* tp_print */
 	0,					/* tp_getattr */
 	0,					/* tp_setattr */
@@ -11296,34 +11382,35 @@ PyTypeObject PySLNode_Type = {
 	0,			/* tp_as_mapping */
 	0,			/* tp_hash */
 	0,					/* tp_call */
-	0,			/* tp_str */
+	slnode_str,			/* tp_str */
 	(getattrofunc)PyObject_GenericGetAttr,		/* tp_getattro */
 	0,					/* tp_setattro */
 	0,			/* tp_as_buffer */
-	Py_TPFLAGS_DEFAULT , /* tp_flags */
+	Py_TPFLAGS_DEFAULT | Py_TPFLAGS_HAVE_ITER , /* tp_flags */
 	0,				/* tp_doc */
 	0,					/* tp_traverse */
 	0,					/* tp_clear */
 	0,					/* tp_richcompare */
 	0,					/* tp_weaklistoffset */
-	0,					/* tp_iter */
-	0,					/* tp_iternext */
+	(getiterfunc)slnode_iter,		/* tp_iter */
+	(iternextfunc)slnode_next,					/* tp_iternext */
 	0,					/* tp_methods */	
 	0,					/* tp_members */
-	0,					/* tp_getset */
+	slnode_gsdefs,					/* tp_getset */
 	0,					/* tp_base */
 	0,					/* tp_dict */
 	0,					/* tp_descr_get */
 	0,					/* tp_descr_set */
 	0,					/* tp_dictoffset */
 	0,					/* tp_init */
-	0,					/* tp_alloc */
+	PyType_GenericAlloc,					/* tp_alloc */
 	0,					/* tp_new */
 };
 
-static PyObject *PySLNodeObject_New( zskiplistNode * node ){
+static PyObject *PySLNodeObject_New( zskiplistNode * node, zskiplist *list ){
 	PySLNodeObject * r =(PySLNodeObject*) PyType_GenericNew( &PySLNode_Type, NULL, NULL );
 	r->node = node;
+	r->list = list;
 	return (PyObject*)r;
 }
 
@@ -11342,11 +11429,45 @@ static PyObject* pysl_init( PySLObject * self, PyObject *args, PyObject* kw ){
 	return 0;
 }
 
-static PyObject* pysl_dealloc( PySLObject * self, PyObject *args ){
+static PyObject* pysl_new( PyTypeObject * type, PyObject *args, PyObject* kw ){
+	PY_N( args );
+	PY_N( kw );
+	PyObject *r = type->tp_alloc(type,0);
+	return r;
+}
+
+static void pysl_dealloc( PySLObject * self, PyObject *args ){
 	PY_N( args );
 	zslFree( self->list );
 	Py_TYPE(self)->tp_free((PyObject *)self);
 }
+
+static PyObject* pysl_getRank( PySLObject * self, PyObject *args ){
+	if( PyTuple_Size( args ) !=2  ){
+		PyErr_BadArgument( );
+		return NULL;
+	}
+	PY_N( self );
+	PyObject * sco = PyTuple_GET_ITEM( args, 0 );
+	double score;
+	sco = PyNumber_Float( sco );
+	if( sco == NULL ){
+		PyErr_BadArgument( );
+		return NULL;
+	}
+	score = PyFloat_AS_DOUBLE( sco );
+	Py_DECREF( sco );
+
+	PyObject *v = PyTuple_GET_ITEM( args, 1 );
+	robj *o = createPyObject( v );
+	unsigned long rank = zslGetRank( self->list, score, o );
+	decrRefCount( o );
+	if( rank == 0 ){
+		PyErr_SetString( PyExc_RuntimeError, "cant find special object" );
+		return NULL;
+	}
+	return PyLong_FromUnsignedLong( rank );
+ }
 
 static PyObject* pysl_insert( PySLObject * self, PyObject *args ){
 	if( PyTuple_Size( args ) !=2  ){
@@ -11367,9 +11488,8 @@ static PyObject* pysl_insert( PySLObject * self, PyObject *args ){
 	score = PyFloat_AS_DOUBLE( sco );
 	Py_DECREF( sco );
 	
-	robj *obj = createObject( REDIS_PYOBJ, v );
+	robj *obj = createPyObject( v );
 	zslInsert( self->list, score, obj );
-	decrRefCount( obj );
 	Py_RETURN_NONE;
 }
 
@@ -11391,7 +11511,7 @@ static PyObject* pysl_delete ( PySLObject * self, PyObject *args ){
 	Py_DECREF( sco );
 
 	PyObject *v = PyTuple_GET_ITEM( args, 1 );
-	robj* obj = createObject( REDIS_PYOBJ, v );
+	robj* obj = createPyObject( v );
 	int r =zslDelete ( self->list, score, obj );
 	decrRefCount( obj );
 	if( r == 0 ){
@@ -11399,7 +11519,35 @@ static PyObject* pysl_delete ( PySLObject * self, PyObject *args ){
 	}
 	Py_RETURN_NONE;
 }
+static PyObject* pysl_iter ( PySLObject * self, PyObject *args ){
+	PY_N( args );
+	return PySLNodeObject_New( self->list->header, self->list ); 
+}
+static PyObject* pysl_rank(  PySLObject * self, PyObject *args ){
+	PY_N( self );
+	if( PyTuple_Size( args ) !=1 ){
+		PyErr_BadArgument( );
+		return NULL;
+	}
 
+	PyObject * sco = PyTuple_GET_ITEM( args, 0 );
+	unsigned long rank ;
+	sco = PyNumber_Long( sco );
+	if( sco == NULL ){
+		PyErr_BadArgument( );
+		return NULL;
+	}
+
+	rank = PyLong_AsUnsignedLong( sco );
+	Py_DECREF( sco );
+	
+	zskiplistNode *r =zslGetElementByRank( self->list, rank );
+	if( r ){ 
+		return	PySLNodeObject_New( r, self->list );
+	}
+	PyErr_Format( PyExc_RuntimeError, "no this rank %d", rank );
+	return NULL;
+}
 static PyObject* pysl_score ( PySLObject * self, PyObject *args ){
 	PY_N( self );
 	if( PyTuple_Size( args ) !=1 ){
@@ -11421,23 +11569,47 @@ static PyObject* pysl_score ( PySLObject * self, PyObject *args ){
 	if( r == NULL ){
 		Py_RETURN_NONE;
 	}
-	return PySLNodeObject_New( r );
+	return PySLNodeObject_New( r, self->list );
 }
+
+static Py_ssize_t pysl_length(PySLObject *self)
+{
+	return self->list->length;
+}
+
+static PySequenceMethods pysl_as_sequence = {
+	(lenfunc)pysl_length, /*sq_length*/
+	(binaryfunc)NULL, /*sq_concat*/
+	(ssizeargfunc)NULL, /*sq_repeat*/
+	(ssizeargfunc)NULL, /*sq_item*/
+	(ssizessizeargfunc)NULL, /*sq_slice*/
+	(ssizeobjargproc)NULL, /*sq_ass_item*/
+	(ssizessizeobjargproc)NULL, /*sq_ass_slice*/
+};
+
+static PyMethodDef pysl_methods[] = {
+	{"insert", (PyCFunction)pysl_insert, METH_VARARGS, NULL },
+	{"score", (PyCFunction)pysl_score, METH_VARARGS, NULL },
+	{"rank", (PyCFunction)pysl_rank, METH_VARARGS, NULL },
+	{"delete", (PyCFunction)pysl_delete, METH_VARARGS, NULL },
+	{"getRank", (PyCFunction)pysl_getRank, METH_VARARGS, NULL },
+	{NULL, NULL, 0, NULL }
+};
 
 
 PyTypeObject PySL_Type = {
-	PyObject_HEAD_INIT(&PyType_Type)
-	(long)"SkipList",
-	(void*)sizeof(PySLObject),
+	PyVarObject_HEAD_INIT(&PyType_Type, 0)
+	"SkipList",
+	sizeof(PySLObject),
 	0,
-	(long)slnode_dealloc, 		/* tp_dealloc */
+	(destructor)pysl_dealloc, 		/* tp_dealloc */
 	0,					/* tp_print */
 	0,					/* tp_getattr */
 	0,					/* tp_setattr */
 	0,
 	0,			/* tp_repr */
 	0,					/* tp_as_number */
-	0,			/* tp_as_sequence */
+	&pysl_as_sequence,			/* tp_as_sequence */
 	0,			/* tp_as_mapping */
 	0,			/* tp_hash */
 	0,					/* tp_call */
@@ -11445,15 +11617,15 @@ PyTypeObject PySL_Type = {
 	(getattrofunc)PyObject_GenericGetAttr,		/* tp_getattro */
 	0,					/* tp_setattro */
 	0,			/* tp_as_buffer */
-	Py_TPFLAGS_DEFAULT , /* tp_flags */
+	Py_TPFLAGS_DEFAULT | Py_TPFLAGS_HAVE_ITER , /* tp_flags */
 	0,				/* tp_doc */
 	0,					/* tp_traverse */
 	0,					/* tp_clear */
 	0,					/* tp_richcompare */
 	0,					/* tp_weaklistoffset */
-	0,					/* tp_iter */
+	pysl_iter,					/* tp_iter */
 	0,					/* tp_iternext */
-	0,					/* tp_methods */	
+	pysl_methods,		/* tp_methods */
 	0,					/* tp_members */
 	0,					/* tp_getset */
 	0,					/* tp_base */
@@ -11463,7 +11635,7 @@ PyTypeObject PySL_Type = {
 	0,					/* tp_dictoffset */
 	pysl_init,					/* tp_init */
 	PyType_GenericAlloc,		/* tp_alloc */
-	PyType_GenericNew,			/* tp_new */
+	pysl_new,			/* tp_new */
 };
 
 /* The End */

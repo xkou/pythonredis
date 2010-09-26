@@ -8,6 +8,7 @@
 
 #define PY_N( A) ( (void)A );
 
+
 typedef struct TimerSt{
 	PyObject *fun;
 	PyObject *args;
@@ -26,9 +27,10 @@ typedef struct PyObjectConn{
 	PyObject *dict;
 }PyObjectConn;
 
-
 static char *g_pybuff;
 static unsigned long g_pybufflen;
+
+
 
 extern PyObject * g_pyo_enc_rule;
 int initPyVM();

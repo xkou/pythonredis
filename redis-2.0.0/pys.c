@@ -530,7 +530,7 @@ PyObject* pyo_inter_decode( char * buff, int * len, PyObject *rule ){
 			return 0;
 		}
 		Py_DECREF( dictNs );	
-		PyObject *r = (PyObject *) PyType_GenericNew( cls , NULL, NULL );
+		PyObject *r = (PyObject *) PyType_GenericNew((PyTypeObject*) cls , NULL, NULL );
 		PyObject *d = PyDict_New();
 		PyObject_SetAttrString( r, "__dict__", d );
 		Py_DECREF( d );
@@ -814,6 +814,8 @@ static PyMethodDef pyMds[] = {
 	{ "server", pyo_server, METH_KEYWORDS, "create server" },
 	{ NULL, NULL, NULL, NULL }
 };
+	
+extern  PyTypeObject PySL_Type;
 int initPyVM(){
 	Py_Initialize();
 	pyo_init();
@@ -824,9 +826,9 @@ int initPyVM(){
 	PyType_Ready( &PyConn_Type);
 	PyConn_Type.tp_dictoffset = offsetof(PyObjectConn, dict );
 
-	extern PyTypeObject PySL_Type;
 	Py_INCREF( &PySL_Type );
-	PyModule_AddObject( m, "SkipList", &PySL_Type );
+	Py_TYPE(&PySL_Type) = &PyType_Type;
+	PyModule_AddObject( m, "SkipList", (PyObject*) &PySL_Type );
 
 
 	FILE * F = fopen( "py/main.py","r" );
@@ -834,8 +836,9 @@ int initPyVM(){
 		printf("cant open py/main.py\n");
 		return 1;
 	}
-	PyRun_AnyFile( F, "main.py");
+	int r =	PyRun_AnyFile( F, "main.py");
 	fclose(F);
+	if( r == -1 ) return 1;
 	return 0;
 }
 
