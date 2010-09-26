@@ -530,7 +530,7 @@ PyObject* pyo_inter_decode( char * buff, int * len, PyObject *rule ){
 			return 0;
 		}
 		Py_DECREF( dictNs );	
-		PyObject *r = PyType_GenericNew( cls , NULL, NULL );
+		PyObject *r = (PyObject *) PyType_GenericNew( cls , NULL, NULL );
 		PyObject *d = PyDict_New();
 		PyObject_SetAttrString( r, "__dict__", d );
 		Py_DECREF( d );
@@ -709,9 +709,16 @@ static void pyconn_dealloc( PyObjectConn * self ){
 		zfree( self->buffer );
 	}
 	self->buffer = 0;
-	close(self->fd);
+	pyclose( self->fd );
 	Py_DECREF(self->dict);
 	PyObject_DEL( self );
+}
+
+static PyObject * pyconn_close( PyObjectConn *self, PyObject * args ){
+	PY_N( self );
+	PY_N( args );
+	Py_DECREF( self );
+	Py_RETURN_NONE;
 }
 
 static PyObject* pyconn_send( PyObjectConn *self, PyObject * args ){
@@ -737,6 +744,7 @@ static PyObject* pyconn_send( PyObjectConn *self, PyObject * args ){
 
 static PyMethodDef pyconn_methods[] = {
 	{"send",(PyCFunction)pyconn_send,	METH_VARARGS, NULL },
+	{"close",(PyCFunction)pyconn_close,	METH_VARARGS, NULL },
 	{NULL, NULL, 0, NULL} ,
 };
 
@@ -775,7 +783,10 @@ static PyTypeObject PyConn_Type = {
 	0,					/* tp_iternext */
 	pyconn_methods,				/* tp_methods */
 	pyconn_memberlist,			/* tp_members */
+	0,
+	0,
 	NULL,
+	NULL
 };
 
 PyObject * PyObjectConn_New( int fd ){
@@ -812,6 +823,11 @@ int initPyVM(){
 	Py_TYPE(&PyConn_Type) = &PyType_Type;
 	PyType_Ready( &PyConn_Type);
 	PyConn_Type.tp_dictoffset = offsetof(PyObjectConn, dict );
+
+	extern PyTypeObject PySL_Type;
+	Py_INCREF( &PySL_Type );
+	PyModule_AddObject( m, "SkipList", &PySL_Type );
+
 
 	FILE * F = fopen( "py/main.py","r" );
 	if( F == NULL ){
