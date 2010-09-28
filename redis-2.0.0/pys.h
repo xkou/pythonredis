@@ -9,6 +9,7 @@
 #define PY_N( A) ( (void)A );
 
 
+
 typedef struct TimerSt{
 	PyObject *fun;
 	PyObject *args;
@@ -31,6 +32,10 @@ static char *g_pybuff;
 static unsigned long g_pybufflen;
 
 
+void startAutoLoader();
+void pystart();
+void closepyclients();
+void pyobject_remove_freelist( int fd);
 
 extern PyObject * g_pyo_enc_rule;
 int initPyVM();
@@ -44,6 +49,8 @@ void pycallLater( double, PyObject*, PyObject*, PyObject*);
 int pycreateServer( int , PyObject*);
 int pysend( int fd,  char * buf, int len );
 PyObject *pyget( char *, int );
+
+
 #endif
 
 
