@@ -1465,7 +1465,7 @@ static int serverCron(struct aeEventLoop *eventLoop, long long id, void *clientD
         used = dictSize(server.db[j].dict);
         vkeys = dictSize(server.db[j].expires);
         if (!(loops % 500) && (used || vkeys)) {
-            redisLog(REDIS_VERBOSE,"DB %d: %lld keys (%lld volatile) in %lld slots HT.",j,used,vkeys,size);
+//            redisLog(REDIS_VERBOSE,"DB %d: %lld keys (%lld volatile) in %lld slots HT.",j,used,vkeys,size);
             /* dictPrintStats(server.dict); */
         }
     }
@@ -1482,12 +1482,14 @@ static int serverCron(struct aeEventLoop *eventLoop, long long id, void *clientD
     }
 
     /* Show information about connected clients */
-    if (!(loops % 500)) {
+/*
+    if (!(loops % 50000)) {
         redisLog(REDIS_VERBOSE,"%d clients connected (%d slaves), %zu bytes in use",
             listLength(server.clients)-listLength(server.slaves),
             listLength(server.slaves),
             zmalloc_used_memory());
     }
+*/
 
     /* Close connections of timedout clients */
     if ((server.maxidletime && !(loops % 100)) || server.blpop_blocked_clients){
@@ -3819,7 +3821,7 @@ static int rdbSave(char *filename) {
         unlink(tmpfile);
         return REDIS_ERR;
     }
-    redisLog(REDIS_NOTICE,"DB saved on disk");
+    redisLog(REDIS_DEBUG,"DB saved on disk");
     server.dirty = 0;
     server.lastsave = time(NULL);
     return REDIS_OK;
@@ -3827,7 +3829,7 @@ static int rdbSave(char *filename) {
 werr:
     fclose(fp);
     unlink(tmpfile);
-    redisLog(REDIS_WARNING,"Write error saving DB on disk: %s", strerror(errno));
+    redisLog(REDIS_DEBUG,"Write error saving DB on disk: %s", strerror(errno));
     if (di) dictReleaseIterator(di);
     return REDIS_ERR;
 }
@@ -4247,7 +4249,7 @@ eoferr: /* unexpected end of file is handled here with a fatal exit */
 
 /*================================== Shutdown =============================== */
 static int prepareForShutdown() {
-    redisLog(REDIS_WARNING,"User requested shutdown, saving DB...");
+    redisLog(REDIS_WARNING,"User requested shutdown");
     /* Kill the saving child if there is a background saving in progress.
        We want to avoid race conditions, for instance our saving child may
        overwrite the synchronous saving did by SHUTDOWN. */
@@ -4265,7 +4267,7 @@ static int prepareForShutdown() {
         if (rdbSave(server.dbfilename) == REDIS_OK) {
             if (server.daemonize)
                 unlink(server.pidfile);
-            redisLog(REDIS_WARNING,"%zu bytes used at exit",zmalloc_used_memory());
+            redisLog(REDIS_DEBUG,"%zu bytes used at exit",zmalloc_used_memory());
         } else {
             /* Ooops.. error saving! The best we can do is to continue
              * operating. Note that if there was a background saving process,
@@ -4277,7 +4279,7 @@ static int prepareForShutdown() {
         }
     }
     redisLog(REDIS_WARNING,"Server exit now, bye bye...");
-
+	closepyclients();
 	Py_Finalize();
 
     return REDIS_OK;
@@ -10877,7 +10879,7 @@ static void usage() {
 }
 
 int main(int argc, char **argv) {
-    time_t start;
+    
 	
     initServerConfig();
     if (argc == 2) {
@@ -10899,20 +10901,24 @@ int main(int argc, char **argv) {
 	g_pybuff = zmalloc( g_pybufflen + 1 );
 
 	if (initPyVM() ) return 1;
-    redisLog(REDIS_NOTICE,"Server started, Redis version " REDIS_VERSION);
+
+//    redisLog(REDIS_NOTICE,"Server started, Redis version " REDIS_VERSION);
+
 #ifdef __linux__
-    linuxOvercommitMemoryWarning();
+ //   linuxOvercommitMemoryWarning();
 #endif
+	time_t start;
     start = time(NULL);
     if (server.appendonly) {
         if (loadAppendOnlyFile(server.appendfilename) == REDIS_OK)
-            redisLog(REDIS_NOTICE,"DB loaded from append only file: %ld seconds",time(NULL)-start);
+            redisLog(REDIS_DEBUG,"DB loaded from append only file: %ld seconds",time(NULL)-start);
     } else {
         if (rdbLoad(server.dbfilename) == REDIS_OK)
-            redisLog(REDIS_NOTICE,"DB loaded from disk: %ld seconds",time(NULL)-start);
+            redisLog(REDIS_DEBUG,"DB loaded from disk: %ld seconds",time(NULL)-start);
     }
 	
-    redisLog(REDIS_NOTICE,"The server is now ready to accept connections on port %d", server.port);
+    redisLog(REDIS_DEBUG,"The server is now ready to accept connections on port %d", server.port);
+
     aeSetBeforeSleepProc(server.el,beforeSleep);
     aeMain(server.el);
     aeDeleteEventLoop(server.el);
@@ -11046,6 +11052,9 @@ static void setupSigSegvAction(void) {
 
 
 
+list * g_pyclientList;
+PyObject * g_call_args2 ;
+PyObject * g_call_args1 ;
 
 PyObject *pyo_set_object( PyObject * self, PyObject *args ){
 	PY_N( self );
@@ -11131,6 +11140,7 @@ int pycallCallback( struct aeEventLoop *ev, long long id, void * data ){
 	if( r == 0 ){
 		PyErr_Print();
 	}
+	Py_DECREF( r );
 	Py_XDECREF( tst->fun );
 	Py_XDECREF( tst->args );
 	if( tst->kw ) Py_XDECREF( tst->kw );
@@ -11165,15 +11175,28 @@ void pyclientCallback( struct aeEventLoop *ev, int fd, void *data, int mask ){
 	REDIS_NOTUSED( mask );
 	PyObjectConn * conn = data;
 	
-	unsigned long r = recv( conn->fd, g_pybuff, g_pybufflen, 0 );
-	unsigned long  totallen = r;
-
-//	printf("!!!!!! %d %p\n", r, g_pybuff );
+	int r = recv( conn->fd, g_pybuff, g_pybufflen, 0 );
+	unsigned long  totallen = 0;
+	
+	PyObject * ret;
 	if(  r <= 0 ){
-		PyObject_CallFunctionObjArgs( conn->proto_lost, conn, PyInt_FromLong( errno ), NULL );
-		Py_XDECREF( conn );
+		PyObject * rea = PyInt_FromLong( errno );
+		PyTuple_SET_ITEM( g_call_args2, 0, (PyObject*)conn );
+		PyTuple_SET_ITEM( g_call_args2, 1, rea );
+		PyObject* ret = PyObject_CallObject( conn->proto_lost, g_call_args2 );
+		if( ret == NULL ){
+			PyErr_Print();
+		}
+		else{
+			Py_DECREF( ret );
+		}
+		Py_DECREF( rea );
+		pyclose( conn->fd );
+		pyobject_remove_freelist( conn->fd );
+		Py_DECREF( conn );
 		return;	
 	}
+	totallen = r;
 	char *buff;
 	char *newbuff = 0;
 	if( conn->buffer ){
@@ -11203,12 +11226,25 @@ void pyclientCallback( struct aeEventLoop *ev, int fd, void *data, int mask ){
 		l = ntohl( l );
 
 		if(  l >= g_pybufflen ){
-			PyObject_CallFunctionObjArgs( conn->proto_lost, conn,  PyString_FromString("too long"), NULL );
-			Py_XDECREF( conn );
+			PyObject *rea = PyString_FromString("too long");
+
+			PyTuple_SET_ITEM( g_call_args2, 0, (PyObject*)conn );
+			PyTuple_SET_ITEM( g_call_args2, 1, rea );
+			ret = PyObject_CallObject( conn->proto_lost, g_call_args2 );
+			if( ret == NULL ){
+				PyErr_Print();
+			}
+			else{
+				Py_DECREF( ret );
+			}
+			Py_DECREF( rea );
+			pyclose( conn->fd );
+			pyobject_remove_freelist( conn->fd );
+			Py_DECREF( conn );
 			return;
 		}
 
-		if( r - 4 < l ){
+		if( (unsigned long)(r - 4) < l ){
 			conn->buffer = zmalloc( r );
 			memcpy( conn->buffer, buff, r );
 			conn->bufferlen = r;
@@ -11218,13 +11254,23 @@ void pyclientCallback( struct aeEventLoop *ev, int fd, void *data, int mask ){
 		PyObject * obj = _pyo_decode( buff+ 4, g_pyo_enc_rule );
 		if( obj == NULL ){
 			PyErr_Print();
-			Py_Exit(1);
+//			Py_Exit(1);
 		}
-		PyObject* ret = PyObject_CallFunctionObjArgs( conn->proto_recv, conn, obj , NULL );	
-		if( ret == 0 ){
-			PyErr_Print();
+		else{
+			PyTuple_SET_ITEM( g_call_args2, 0, (PyObject*)conn );
+			PyTuple_SET_ITEM( g_call_args2, 1, obj );
+			PyObject* ret = PyObject_CallObject( conn->proto_recv, g_call_args2 );
+			if( ret == NULL ){				
+				PyErr_Print();
+			}
+			else{
+				Py_DECREF( ret );
+
+			}
+			Py_XDECREF( obj );
 		}
-		Py_DECREF( obj );
+			
+		
 		r = r -( l + 4 );
 		buff += l + 4; 
 	}
@@ -11280,10 +11326,14 @@ void pyserverCallback( struct aeEventLoop *ev, int fd, void *data, int mask ){
 		return;	
 	}
 
-
-	PyObject* r = PyObject_CallFunctionObjArgs( f, conn , NULL );
+	listAddNodeTail( g_pyclientList, (void*)conn->fd );
+	PyTuple_SET_ITEM( g_call_args1, 0, conn );
+	PyObject* r = PyObject_CallObject( f, g_call_args1 );
 	if( r == 0 ){
 		PyErr_Print();
+	}
+	else{
+		Py_DECREF( r );
 	}
 
 	int err =aeCreateFileEvent( server.el, cfd, AE_READABLE, pyclientCallback, (void*) conn );
@@ -11360,9 +11410,9 @@ static PyObject* slnode_next ( PySLNodeObject * self, PyObject *args ){
 }
 
 static PyGetSetDef slnode_gsdefs[] = {
-	{"value", slnode_getObj, NULL, NULL, NULL},
-	{"score", slnode_getScore, NULL, NULL, NULL },
-	{"rank", slnode_getRank, NULL, NULL, NULL },
+	{"value", (getter )slnode_getObj, NULL, NULL, NULL},
+	{"score", (getter )slnode_getScore, NULL, NULL, NULL },
+	{"rank", (getter )slnode_getRank, NULL, NULL, NULL },
 	{ NULL, NULL, NULL, NULL, NULL }
 };
 
@@ -11382,7 +11432,7 @@ PyTypeObject PySLNode_Type = {
 	0,			/* tp_as_mapping */
 	0,			/* tp_hash */
 	0,					/* tp_call */
-	slnode_str,			/* tp_str */
+	(reprfunc)slnode_str,			/* tp_str */
 	(getattrofunc)PyObject_GenericGetAttr,		/* tp_getattro */
 	0,					/* tp_setattro */
 	0,			/* tp_as_buffer */
@@ -11545,7 +11595,7 @@ static PyObject* pysl_rank(  PySLObject * self, PyObject *args ){
 	if( r ){ 
 		return	PySLNodeObject_New( r, self->list );
 	}
-	PyErr_Format( PyExc_RuntimeError, "no this rank %d", rank );
+	PyErr_Format( PyExc_RuntimeError, "no this rank %ld", rank );
 	return NULL;
 }
 static PyObject* pysl_score ( PySLObject * self, PyObject *args ){
@@ -11623,7 +11673,7 @@ PyTypeObject PySL_Type = {
 	0,					/* tp_clear */
 	0,					/* tp_richcompare */
 	0,					/* tp_weaklistoffset */
-	pysl_iter,					/* tp_iter */
+	(getiterfunc )pysl_iter,					/* tp_iter */
 	0,					/* tp_iternext */
 	pysl_methods,		/* tp_methods */
 	0,					/* tp_members */
@@ -11633,10 +11683,114 @@ PyTypeObject PySL_Type = {
 	0,					/* tp_descr_get */
 	0,					/* tp_descr_set */
 	0,					/* tp_dictoffset */
-	pysl_init,					/* tp_init */
+	(initproc )pysl_init,					/* tp_init */
 	PyType_GenericAlloc,		/* tp_alloc */
 	pysl_new,			/* tp_new */
 };
+
+
+// auto loader
+
+long g_lastLoad = 0;
+long g_modules = 0;
+PyObject *g_allMds ;
+int pyreloadCallback( struct aeEventLoop *ev, long long id, void * data ){
+	PY_N( ev );
+	PY_N( id );
+	PY_N( data );
+	
+	static struct stat __stat;
+	static char fpath[1024];
+
+	PyObject *mds = PyImport_GetModuleDict();
+	if( g_modules != PyDict_Size( mds ) ){
+		PyDict_Clear( g_allMds );
+		Py_ssize_t pos = 0;
+		
+		PyObject *k, *v;
+		while (PyDict_Next(mds, &pos, &k, &v)) {
+			if( !PyObject_HasAttrString( v, "__file__" ) ) continue;
+			PyObject *p = PyObject_GetAttrString( v, "__file__" );
+			if(p == NULL ) continue;
+			strcpy( fpath, PyString_AS_STRING( p ) );
+			int fnl = PyString_GET_SIZE(p);
+			if( strstr( fpath, "/py/" ) ){
+				if( fpath[fnl-1] == 'c' ) fpath[fnl-1] = 0;
+		//		printf("[Load M] %s\n", fpath );
+				PyDict_SetItem( g_allMds, p, v );
+				if( g_modules == 0 ){
+					stat( fpath, &__stat );
+					if( __stat.st_mtime > g_lastLoad ){
+						g_lastLoad = __stat.st_mtime;
+					}
+				}
+			}
+			Py_DECREF( p );
+		}
+		g_modules = PyDict_Size( mds );
+		printf("Load Modules: %d\n", PyDict_Size( g_allMds ) );
+	}
+
+	PyObject *k, *v;
+	Py_ssize_t pos = 0;
+
+	while (PyDict_Next(g_allMds, &pos, &k, &v)) {
+		char *fn = PyString_AS_STRING( k );
+		int fnl = PyString_GET_SIZE( k );
+		strcpy( fpath, fn );
+		if( fpath[fnl-1] == 'c' ){
+			fpath[fnl-1] = 0;
+		}
+		stat( fpath , &__stat );
+		long lastmt = __stat.st_mtime;
+		
+//		printf("[TT] %d %d %s\n", lastmt, g_lastLoad,fpath );
+		if( lastmt > g_lastLoad ){
+			PyObject*  r = PyImport_ReloadModule( v );
+			printf("[Load M] %s\n", fpath );
+			if( r == NULL ){
+				PyErr_Print();
+			}
+			else{
+				Py_DECREF( r );
+			}
+			g_lastLoad = lastmt;
+		}
+	}
+
+	return 700;
+}
+
+void startAutoLoader(){
+	aeCreateTimeEvent(server.el, 0, pyreloadCallback, NULL, NULL);
+}
+
+void pystart(){
+	g_pyclientList = listCreate();
+	g_call_args2 = PyTuple_New( 2 );
+	g_call_args1 = PyTuple_New( 1 );
+}
+
+void pyobject_remove_freelist( int fd ){
+	listNode * ln = listSearchKey( g_pyclientList, (void*)fd );
+    redisAssert(ln != NULL);
+    listDelNode(g_pyclientList,ln);
+}
+
+void closepyclients(){
+
+	Py_DECREF( g_call_args2 );
+	Py_DECREF( g_call_args1 );
+	
+	listIter li;
+	listNode *ln;
+	
+	listRewind(g_pyclientList,&li);
+	while((ln = listNext(&li))) {
+		int fd = (int)ln->value;
+		close(fd);
+	}
+}
 
 /* The End */
 

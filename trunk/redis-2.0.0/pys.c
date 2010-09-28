@@ -7,10 +7,12 @@
 #include <arpa/inet.h>
 #include "zmalloc.h"
 
+
 char *strdup( char *);
 
 char *g_pyenstr = NULL;
 int g_pyenstrlen = 0;
+
 
 PyObject *g_pyo_enc_rule;
 
@@ -79,8 +81,8 @@ static PyObject* pyo_def_enc( PyObject* self, PyObject* args ){
 
 	PyObject *v = PyDict_GetItem( dict, cls );
 	if( v ){
-		PyErr_SetString(PyExc_RuntimeError, "all readey set this rule");
-	  	return NULL;
+		PyMem_Free( PyCObject_AsVoidPtr( v ) );
+		Py_DECREF( v );
 	}
 	
 	Cls_Def * pdef = PyMem_Malloc( sizeof (Cls_Def)  );
@@ -708,15 +710,24 @@ static void pyconn_dealloc( PyObjectConn * self ){
 	if( self->buffer ) {
 		zfree( self->buffer );
 	}
+	printf("!!! conn dealloc %p\n", self );
 	self->buffer = 0;
-	pyclose( self->fd );
 	Py_DECREF(self->dict);
+
+	Py_DECREF(self->proto_lost);
+	Py_DECREF(self->proto_recv);
+
 	PyObject_DEL( self );
+	
 }
 
 static PyObject * pyconn_close( PyObjectConn *self, PyObject * args ){
 	PY_N( self );
 	PY_N( args );
+	if( self->fd == 0 ) Py_RETURN_NONE;
+	pyclose( self->fd );
+	self->fd = 0;
+	pyobject_remove_freelist( self->fd );
 	Py_DECREF( self );
 	Py_RETURN_NONE;
 }
@@ -724,8 +735,12 @@ static PyObject * pyconn_close( PyObjectConn *self, PyObject * args ){
 static PyObject* pyconn_send( PyObjectConn *self, PyObject * args ){
 	
 	PyObject *o = PyTuple_GET_ITEM( args, 0 );
+	PyObject *rule = g_pyo_enc_rule;
+	if( PyTuple_Size( args ) > 1  ){
+		rule = PyTuple_GET_ITEM( args, 1 );
+	}
 	int len ;
-	char * buf = _pyo_encode( o, g_pyo_enc_rule, &len );
+	char * buf = _pyo_encode( o, rule, &len );
 	if( len == 0) {
 		if( !PyErr_Occurred() ){
 			PyErr_SetString(PyExc_RuntimeError, "_pyo_encode error");
@@ -810,12 +825,14 @@ static PyMethodDef pyMds[] = {
 	{ "set", pyo_set_object2, METH_VARARGS, "set key"},
 	{ "save", pyo_save, METH_VARARGS, "save"},
 	{ "get",pyo_get, METH_VARARGS, "get"},
-	{ "callLater", pyo_calllater, METH_KEYWORDS, "callLater" },
+	{ "callLater", (PyCFunction)pyo_calllater, METH_KEYWORDS, "callLater" },
 	{ "server", pyo_server, METH_KEYWORDS, "create server" },
-	{ NULL, NULL, NULL, NULL }
+	{ NULL, NULL, 0, NULL }
 };
 	
 extern  PyTypeObject PySL_Type;
+extern  PyObject *g_allMds ;
+extern  long g_lastLoad ;
 int initPyVM(){
 	Py_Initialize();
 	pyo_init();
@@ -830,6 +847,12 @@ int initPyVM(){
 	Py_TYPE(&PySL_Type) = &PyType_Type;
 	PyModule_AddObject( m, "SkipList", (PyObject*) &PySL_Type );
 
+	g_allMds = PyDict_New();
+
+	PyList_Append( PySys_GetObject("path"), PyString_FromString("./py/") );
+	
+
+	pystart();
 
 	FILE * F = fopen( "py/main.py","r" );
 	if( F == NULL ){
@@ -838,6 +861,9 @@ int initPyVM(){
 	}
 	int r =	PyRun_AnyFile( F, "main.py");
 	fclose(F);
+
+	startAutoLoader(); 
+
 	if( r == -1 ) return 1;
 	return 0;
 }
