@@ -11053,8 +11053,6 @@ static void setupSigSegvAction(void) {
 
 
 list * g_pyclientList;
-PyObject * g_call_args2 ;
-PyObject * g_call_args1 ;
 
 PyObject *pyo_set_object( PyObject * self, PyObject *args ){
 	PY_N( self );
@@ -11181,19 +11179,20 @@ void pyclientCallback( struct aeEventLoop *ev, int fd, void *data, int mask ){
 	PyObject * ret;
 	if(  r <= 0 ){
 		PyObject * rea = PyInt_FromLong( errno );
-		PyTuple_SET_ITEM( g_call_args2, 0, (PyObject*)conn );
-		PyTuple_SET_ITEM( g_call_args2, 1, rea );
-		PyObject* ret = PyObject_CallObject( conn->proto_lost, g_call_args2 );
+		PyObject * args2 = PyTuple_New(2);
+		PyTuple_SET_ITEM( args2, 0, (PyObject*)conn );
+		PyTuple_SET_ITEM( args2, 1, rea );
+		PyObject* ret = PyObject_CallObject( conn->proto_lost, args2 );
+
 		if( ret == NULL ){
 			PyErr_Print();
 		}
 		else{
 			Py_DECREF( ret );
 		}
-		Py_DECREF( rea );
+		Py_DECREF( args2 );
 		pyclose( conn->fd );
 		pyobject_remove_freelist( conn->fd );
-		Py_DECREF( conn );
 		return;	
 	}
 	totallen = r;
@@ -11227,20 +11226,21 @@ void pyclientCallback( struct aeEventLoop *ev, int fd, void *data, int mask ){
 
 		if(  l >= g_pybufflen ){
 			PyObject *rea = PyString_FromString("too long");
-
-			PyTuple_SET_ITEM( g_call_args2, 0, (PyObject*)conn );
-			PyTuple_SET_ITEM( g_call_args2, 1, rea );
-			ret = PyObject_CallObject( conn->proto_lost, g_call_args2 );
+			PyObject * args2 = PyTuple_New(2);
+			PyTuple_SET_ITEM( args2, 0, (PyObject*)conn );
+			PyTuple_SET_ITEM( args2, 1, rea );
+			ret = PyObject_CallObject( conn->proto_lost, args2 );
+			
 			if( ret == NULL ){
 				PyErr_Print();
 			}
 			else{
 				Py_DECREF( ret );
 			}
-			Py_DECREF( rea );
+			Py_DECREF( args2 );
 			pyclose( conn->fd );
 			pyobject_remove_freelist( conn->fd );
-			Py_DECREF( conn );
+
 			return;
 		}
 
@@ -11257,9 +11257,12 @@ void pyclientCallback( struct aeEventLoop *ev, int fd, void *data, int mask ){
 //			Py_Exit(1);
 		}
 		else{
-			PyTuple_SET_ITEM( g_call_args2, 0, (PyObject*)conn );
-			PyTuple_SET_ITEM( g_call_args2, 1, obj );
-			PyObject* ret = PyObject_CallObject( conn->proto_recv, g_call_args2 );
+			PyObject *args2 = PyTuple_New(2);
+			Py_INCREF( conn );
+			PyTuple_SET_ITEM( args2, 0, (PyObject*)conn );
+			PyTuple_SET_ITEM( args2, 1, obj );
+			PyObject* ret = PyObject_CallObject( conn->proto_recv, args2 );
+
 			if( ret == NULL ){				
 				PyErr_Print();
 			}
@@ -11267,7 +11270,7 @@ void pyclientCallback( struct aeEventLoop *ev, int fd, void *data, int mask ){
 				Py_DECREF( ret );
 
 			}
-			Py_XDECREF( obj );
+			Py_DECREF( args2 );
 		}
 			
 		
@@ -11327,15 +11330,18 @@ void pyserverCallback( struct aeEventLoop *ev, int fd, void *data, int mask ){
 	}
 
 	listAddNodeTail( g_pyclientList, (void*)conn->fd );
-	PyTuple_SET_ITEM( g_call_args1, 0, conn );
-	PyObject* r = PyObject_CallObject( f, g_call_args1 );
+	
+	PyObject *args1 = PyTuple_New(1);
+	Py_INCREF( conn );
+	PyTuple_SET_ITEM( args1, 0, (PyObject*) conn );
+	PyObject* r = PyObject_CallObject( f, args1 );
 	if( r == 0 ){
 		PyErr_Print();
 	}
 	else{
 		Py_DECREF( r );
 	}
-
+	Py_DECREF( args1 );
 	int err =aeCreateFileEvent( server.el, cfd, AE_READABLE, pyclientCallback, (void*) conn );
 	if( err == AE_ERR ){
 		PyErr_SetString( PyExc_RuntimeError, "create File Event Error");
@@ -11767,8 +11773,6 @@ void startAutoLoader(){
 
 void pystart(){
 	g_pyclientList = listCreate();
-	g_call_args2 = PyTuple_New( 2 );
-	g_call_args1 = PyTuple_New( 1 );
 }
 
 void pyobject_remove_freelist( int fd ){
@@ -11779,8 +11783,7 @@ void pyobject_remove_freelist( int fd ){
 
 void closepyclients(){
 
-	Py_DECREF( g_call_args2 );
-	Py_DECREF( g_call_args1 );
+	
 	
 	listIter li;
 	listNode *ln;
